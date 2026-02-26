@@ -1,4 +1,4 @@
-# DESeq_RUVseq
+# EasyDE
 
 
 pipeline/
