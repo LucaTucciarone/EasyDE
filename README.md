@@ -44,59 +44,67 @@ between scripts.
 
 ## Installation
 
-### R (≥ 4.2 recommended)
+The recommended approach is **micromamba** (or mamba/conda). The environment
+file `deseq_ruvseq_env_V2.yml` at the pipeline root installs everything in one
+command — R, all Bioconductor packages, and all CRAN dependencies.
+
+### 1. Install micromamba (if not already installed)
 
 ```bash
-# Check your R version
-R --version
+# macOS / Linux — official installer
+"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+
+# Or via Homebrew on macOS
+brew install micromamba
 ```
 
-### CRAN packages
+For other platforms see: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html
 
-```r
-install.packages(c(
-  "yaml",
-  "data.table",
-  "dplyr",
-  "tibble",
-  "tidyr",
-  "ggplot2",
-  "ggrepel",
-  "ggcorrplot",
-  "viridis",
-  "reshape2",
-  "optparse",
-  "stringr"
-))
+### 2. Create the environment
+
+From the pipeline root directory:
+
+```bash
+micromamba env create -f deseq_ruvseq_env_V2.yml
 ```
 
-### Bioconductor packages
+This installs R, DESeq2, RUVSeq, EDASeq, fgsea, and all supporting packages.
+Takes ~5–10 minutes on first run.
 
-```r
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
+### 3. Activate the environment
 
-BiocManager::install(c(
-  "DESeq2",      # core differential expression
-  "RUVSeq",      # remove unwanted variation
-  "EDASeq",      # required by RUVSeq
-  "fgsea"        # fast gene set enrichment analysis
-))
+```bash
+micromamba activate deseq_ruvseq_v2
 ```
 
-### Verify installation
+You'll need to activate it each time before running pipeline scripts.
+Add it to your shell profile or a project `.envrc` (if using `direnv`) to
+activate automatically when you `cd` into the project.
+
+### 4. Verify the installation
 
 ```r
-pkgs <- c("yaml","data.table","dplyr","tibble","tidyr","ggplot2","ggrepel",
-          "ggcorrplot","viridis","reshape2","optparse","stringr",
-          "DESeq2","RUVSeq","EDASeq","fgsea")
+# Run from R inside the activated environment
+pkgs <- c("yaml", "data.table", "dplyr", "tibble", "tidyr",
+          "ggplot2", "ggrepel", "ggcorrplot", "viridis",
+          "reshape2", "optparse", "stringr",
+          "DESeq2", "RUVSeq", "EDASeq", "fgsea")
 
 not_installed <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
 if (length(not_installed) == 0) {
-    cat("All packages installed.\n")
+    cat("All packages installed and ready.\n")
 } else {
     cat("Missing:", paste(not_installed, collapse = ", "), "\n")
 }
+```
+
+### Updating the environment
+
+If you need to add packages later:
+
+```bash
+# Add a package to the yml, then update:
+micromamba env update -f deseq_ruvseq_env_V2.yml --prune
 ```
 
 ---
