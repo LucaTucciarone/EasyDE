@@ -126,25 +126,7 @@ ranking — these genes are technically variable and inflate pathway results.
 Each file should be a CSV with at minimum an **`Approved symbol`** column
 (HGNC standard). Download from HGNC BioMart:
 
-**Option A — HGNC BioMart (recommended, always current)**
-
-1. Go to: https://biomart.genenames.org
-2. Under **Filters**, set:
-   - Gene group: select the group you want (see below)
-3. Under **Attributes**, ensure **Approved symbol** is included
-4. Click **Results** → download as CSV
-
-Gene groups to download separately:
-- **Ribosomal proteins — large subunit**: search `RPL` or filter by gene group "Ribosomal proteins"
-- **Ribosomal proteins — small subunit**: search `RPS`
-- **Mitochondrial genes**: filter by gene group "Mitochondrially encoded"
-
-Save as:
-```
-resources/gsea_files/rpl_genes.csv
-resources/gsea_files/rps_genes.csv
-resources/gsea_files/mtr_genes.csv
-```
+**Option A — Included in this github**
 
 **Option B — Direct download from HGNC FTP**
 
@@ -163,8 +145,7 @@ wget -O resources/gsea_files/mtr_genes.csv \
 ```
 
 > **Note:** Check that the downloaded CSV contains an `Approved symbol` column.
-> If the column header differs, either rename it or update `fgsea.exclude_gene_lists`
-> logic in `06_run_fgsea.R` accordingly.
+> The "resources/gsea_files/" file path must exist for this to work.
 
 **Minimal manual fallback** — if downloads fail, create placeholder CSVs:
 
