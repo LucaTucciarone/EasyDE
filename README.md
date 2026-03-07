@@ -76,7 +76,8 @@ EasyDE/
 │   ├── fetch/                            ← PanKbase data adapter
 │   └── utils/                            ← shared R utilities
 ├── notebooks/                            ← post-run exploration
-│   └── explore_results.ipynb
+│   ├── explore_results.ipynb
+│   └── pipeline_walkthrough/             ← interactive step-by-step (R Markdown)
 ├── docs/                                 ← detailed documentation
 └── installation/
     └── EasyDE_install.yml
@@ -130,3 +131,10 @@ jupyter notebook notebooks/explore_results.ipynb
 
 Produces DE boxplots, fGSEA heatmaps, divergent pathway analysis,
 and pipeline status overviews across all contrasts and cell types.
+
+### Interactive walkthrough
+
+For teaching or exploration, use the **pipeline walkthrough notebooks** in
+`notebooks/pipeline_walkthrough/`. These are R Markdown notebooks that run
+the full pipeline step-by-step using simple `for` loops instead of Snakemake.
+See the [walkthrough README](notebooks/pipeline_walkthrough/README.md).
