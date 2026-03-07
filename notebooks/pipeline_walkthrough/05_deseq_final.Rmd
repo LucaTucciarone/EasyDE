@@ -1,64 +1,180 @@
 ---
-title: "EasyDE Walkthrough — 05 Final DESeq2"
+title: "EasyDE Walkthrough — 05 Final DESeq2 with W Factors"
 output: html_document
 ---
 
-# Step 05: Final DESeq2 with W Factors
+# Step 05: Final DESeq2 (RUVseq-corrected)
 
-> **Paired mode:** This step is automatically **skipped** — the base model
-> from step 03 is the final result.
+> **Paired mode:** This step is **skipped** — the base model from step 03
+> is the final model.
 
-For unpaired analyses, this step re-fits DESeq2 with W latent factors from
-step 04 added to the formula. W factors that correlated with the contrast
-variable were already pruned in step 04.
+For unpaired analyses, this step re-fits DESeq2 with the safe W factors
+from step 04 added to the formula. This removes unwanted technical variation
+while preserving genuine biological signal.
+
+**Formula:** `~ W_1 + W_2 + ... + covariate + contrast_var`
+(only safe Ws are included — correlated ones were pruned in step 04)
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
+
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr)
+    library(DESeq2); library(ggplot2)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
+config_data <- load_config(config_path)
+cfg <- config_data$cfg; contrasts_df <- config_data$contrasts_df
 ```
 
-## Check if this step should run
+## Check paired mode
 
-```{r check-mode}
-cfg <- suppressWarnings(yaml::read_yaml(config_path))
+```{r check-paired}
 paired <- isTRUE(cfg$steps$paired_analysis)
 
 if (paired) {
-    cat("** PAIRED MODE — this entire notebook is SKIPPED **\n")
-    cat("** Step 03 base model IS the final model **\n")
+    cat("╔══════════════════════════════════════════════╗\n")
+    cat("║  PAIRED MODE — this step is SKIPPED          ║\n")
+    cat("║  Step 03 base model IS the final model.      ║\n")
+    cat("╚══════════════════════════════════════════════╝\n")
     knitr::knit_exit()
 }
 ```
 
-## Source and run
+## Re-fit DESeq2 with W factors
 
-```{r source-script}
-source("workflow/scripts/05_run_deseq_final.R")
-```
+```{r run-deseq-ruv}
+build_deseq_formula <- function(covariates, contrast_var) {
+    terms <- c(covariates, contrast_var)
+    paste0("~ ", paste(terms, collapse = " + "))
+}
 
-```{r build-loop}
-config_data <- load_config(config_path)
-contrasts_df <- config_data$contrasts_df
+for (row_i in seq_len(nrow(contrasts_df))) {
 
-loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
-    row <- contrasts_df[i, ]
-    strata <- parse_pipe_field(row$strata)
-    data.frame(contrast_id = row$contrast_id, stratum = strata,
-               stringsAsFactors = FALSE)
-}))
-```
+    contrast_row <- contrasts_df[row_i, ]
+    contrast_id  <- contrast_row$contrast_id
+    strata       <- parse_pipe_field(contrast_row$strata)
 
-```{r run-loop}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+    for (stratum in strata) {
+        stratum_safe <- sanitize_names(stratum)
+        inter_dir    <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "intermediates")
+        finals_dir   <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "finals")
+        plot_dir     <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "plots")
+        dir.create(finals_dir, recursive = TRUE, showWarnings = FALSE)
+        dir.create(plot_dir,   recursive = TRUE, showWarnings = FALSE)
 
-    tryCatch(
-        main(config_path, cid, stm),
-        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
-    )
+        cat(sprintf("\n══════ %s | %s ══════\n", contrast_id, stratum))
+
+        # --- Check preflight + RUVseq summary ---
+        ruvseq_summary_path <- file.path(inter_dir, "ruvseq_summary.csv")
+        if (!file.exists(ruvseq_summary_path) ||
+            is_skip_sentinel(ruvseq_summary_path)) {
+            cat("  ✗ RUVseq was skipped — writing sentinel\n")
+            writeLines("skipped=TRUE", file.path(finals_dir, "results_ruv.tsv"))
+            next
+        }
+
+        # --- Read RUVseq outputs ---
+        ruvseq_summary <- read.csv(ruvseq_summary_path)
+        safe_ws <- strsplit(ruvseq_summary$safe_ws[1], "\\|")[[1]]
+        safe_ws <- safe_ws[safe_ws != ""]
+
+        if (length(safe_ws) == 0) {
+            cat("  ⚠ All W factors were pruned — RUV model = base model\n")
+            writeLines("skipped=TRUE", file.path(finals_dir, "results_ruv.tsv"))
+            next
+        }
+
+        # --- Load coldata with W factors + counts ---
+        coldata_W <- read.csv(file.path(inter_dir, "ruvseq_best_coldata.csv"),
+                              check.names = FALSE, row.names = 1)
+        counts_df <- fread(file.path(inter_dir, "counts_filtered.csv")) %>%
+                     as.data.frame()
+        gene_names <- counts_df[[1]]
+        counts_mat <- as.matrix(counts_df[, -1])
+        storage.mode(counts_mat) <- "integer"
+        rownames(counts_mat) <- gene_names
+
+        # --- Build formula with safe Ws ---
+        safe_contrast <- sanitize_names(contrast_row$contrast_var)
+        safe_covs     <- sanitize_names(parse_pipe_field(contrast_row$covariates))
+        safe_covs     <- safe_covs[safe_covs %in% colnames(coldata_W)]
+
+        all_terms    <- c(safe_ws, safe_covs)
+        formula_str  <- build_deseq_formula(all_terms, safe_contrast)
+        cat(sprintf("  Formula: %s\n", formula_str))
+
+        # --- Create DESeqDataSet and run ---
+        counts_mat <- counts_mat[, rownames(coldata_W), drop = FALSE]
+
+        dds <- DESeqDataSetFromMatrix(
+            countData = counts_mat,
+            colData   = coldata_W,
+            design    = as.formula(formula_str)
+        )
+        dds <- DESeq(dds)
+
+        # --- Extract results ---
+        control_grp      <- contrast_row$control_grp
+        experimental_grp <- contrast_row$experimental_grp
+        is_categorical   <- !is.na(control_grp) && control_grp != ""
+        lfc_shrinkage    <- isTRUE(cfg$deseq2$lfc_shrinkage)
+
+        log_dir <- file.path(cfg$outputs$logs_dir, contrast_id)
+        logger <- create_logger(
+            log_dir, stratum_safe, "05",
+            contrast_id = contrast_id, biosample = stratum
+        )
+
+        deseq_out <- extract_deseq_results(
+            dds              = dds,
+            contrast_var     = safe_contrast,
+            control_grp      = if (is_categorical) control_grp else NULL,
+            experimental_grp = if (is_categorical) experimental_grp else NULL,
+            lfc_shrinkage    = lfc_shrinkage,
+            fdr_threshold    = cfg$deseq2$fdr_threshold,
+            l2fc_threshold   = cfg$deseq2$l2fc_threshold,
+            logger           = logger
+        )
+
+        cat(sprintf("  DEGs (RUV-corrected): %d\n", deseq_out$n_degs))
+
+        # --- Write outputs ---
+        write_result(deseq_out$results,
+                     file.path(finals_dir, "results_ruv.tsv"))
+
+        model_info <- data.frame(formula = formula_str,
+                                 n_degs = deseq_out$n_degs,
+                                 stringsAsFactors = FALSE)
+        write_result(model_info,
+                     file.path(inter_dir, "model_info_ruv.csv"), sep = ",")
+
+        # Volcano
+        plot_df <- deseq_out$results
+        lfc_col <- if ("log2FoldChange_shrunk" %in% colnames(plot_df) &&
+                       !all(is.na(plot_df$log2FoldChange_shrunk)))
+                       "log2FoldChange_shrunk" else "log2FoldChange"
+
+        p <- plot_volcano(
+            df = plot_df, lfc_col = lfc_col, padj_col = "padj",
+            gene_col = "gene",
+            title = sprintf("Volcano — %s %s (RUV)", stratum, contrast_id),
+            fdr_line = cfg$deseq2$fdr_threshold,
+            l2fc_line = cfg$deseq2$l2fc_threshold
+        )
+        if (!is.null(p)) {
+            pdf(file.path(plot_dir, "volcano_ruv.pdf"), width = 10, height = 8)
+            print(p); dev.off()
+        }
+
+        cat("  ✓ Wrote results_ruv.tsv, model_info_ruv, volcano_ruv\n")
+    }
 }
 ```

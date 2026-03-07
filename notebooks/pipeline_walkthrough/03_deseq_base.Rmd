@@ -5,72 +5,208 @@ output: html_document
 
 # Step 03: Base DESeq2 Analysis
 
-For each contrast × stratum, fits the base DESeq2 model with user-specified
-covariates. Produces `results_base.tsv` with log2 fold changes and adjusted
-p-values.
+For each contrast × stratum that passed preflight, this step:
+1. Loads the filtered coldata and count matrix from step 02
+2. Builds the DESeq2 formula (`~ covariate1 + covariate2 + contrast_var`)
+3. Creates a DESeqDataSet and runs DESeq2
+4. Extracts results with apeglm shrinkage (if applicable)
+5. Saves DE results and a volcano plot
 
-In paired mode, the formula includes donor as a blocking factor
-(e.g. `~ donor_accession + treatment`).
+In **paired mode**, the donor ID is included in the formula as a blocking
+factor (e.g. `~ donor_accession + treatment`).
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
-```
 
-## Source the script
-
-```{r source-script}
-source("workflow/scripts/03_run_deseq_base.R")
-```
-
-## Build loop
-
-```{r build-loop}
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr)
+    library(DESeq2); library(ggplot2)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
 config_data <- load_config(config_path)
-contrasts_df <- config_data$contrasts_df
-
-loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
-    row <- contrasts_df[i, ]
-    strata <- parse_pipe_field(row$strata)
-    data.frame(contrast_id = row$contrast_id, stratum = strata,
-               stringsAsFactors = FALSE)
-}))
+cfg <- config_data$cfg; contrasts_df <- config_data$contrasts_df
+paired <- isTRUE(cfg$steps$paired_analysis)
 ```
 
-## Run the loop
+## Helper: build formula
 
-Strata that were rejected at preflight (step 02) will be skipped
-automatically — the script detects preflight status and exits cleanly.
+The formula always ends with the contrast variable (DESeq2 convention).
+In paired mode, the donor column is prepended as a blocking factor.
 
-```{r run-loop}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
-
-    tryCatch(
-        main(config_path, cid, stm),
-        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
-    )
+```{r formula-helper}
+build_deseq_formula <- function(covariates, contrast_var) {
+    terms <- c(covariates, contrast_var)
+    paste0("~ ", paste(terms, collapse = " + "))
 }
 ```
 
-## Quick check: how many DEGs per stratum?
+## Run DESeq2 for all strata
 
-```{r check-degs}
-cfg <- config_data$cfg
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    results_path <- file.path(cfg$outputs$results_dir, cid, stm, "finals", "results_base.tsv")
-    if (file.exists(results_path) && !is_skip_sentinel(results_path)) {
-        res <- read.delim(results_path)
-        n_degs <- sum(!is.na(res$padj) & res$padj < 0.05, na.rm = TRUE)
-        cat(sprintf("  %s | %s → %d DEGs (padj < 0.05)\n", cid, stm, n_degs))
-    } else {
-        cat(sprintf("  %s | %s → skipped\n", cid, stm))
+```{r run-deseq}
+for (row_i in seq_len(nrow(contrasts_df))) {
+
+    contrast_row <- contrasts_df[row_i, ]
+    contrast_id  <- contrast_row$contrast_id
+    strata       <- parse_pipe_field(contrast_row$strata)
+
+    for (stratum in strata) {
+        stratum_safe <- sanitize_names(stratum)
+        inter_dir    <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "intermediates")
+        finals_dir   <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "finals")
+        plot_dir     <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "plots")
+        dir.create(finals_dir, recursive = TRUE, showWarnings = FALSE)
+        dir.create(plot_dir,   recursive = TRUE, showWarnings = FALSE)
+
+        cat(sprintf("\n══════ %s | %s ══════\n", contrast_id, stratum))
+
+        # --- Check preflight status ---
+        preflight_status <- read_preflight_status(inter_dir)
+        if (is.na(preflight_status) || preflight_status == "fail") {
+            cat("  ✗ Preflight failed — skipping\n")
+            writeLines("skipped=TRUE", file.path(finals_dir, "results_base.tsv"))
+            next
+        }
+
+        # --- Load coldata and counts from step 02 ---
+        coldata <- read.csv(file.path(inter_dir, "coldata.csv"),
+                            check.names = FALSE, row.names = 1)
+        counts_df <- fread(file.path(inter_dir, "counts_filtered.csv")) %>%
+                     as.data.frame()
+        gene_names <- counts_df[[1]]
+        counts_mat <- as.matrix(counts_df[, -1])
+        storage.mode(counts_mat) <- "integer"
+        rownames(counts_mat) <- gene_names
+
+        # --- Load name map for variable translations ---
+        name_map_df <- read.csv(file.path(inter_dir, "name_map.csv"))
+        name_map    <- setNames(name_map_df$sanitized, name_map_df$original)
+
+        # --- Build formula ---
+        contrast_var <- contrast_row$contrast_var
+        safe_contrast <- sanitize_names(contrast_var)
+        covariates_raw <- parse_pipe_field(contrast_row$covariates)
+        safe_covs      <- sanitize_names(covariates_raw)
+        safe_covs      <- safe_covs[safe_covs %in% colnames(coldata)]
+
+        # In paired mode: add donor as a blocking factor
+        if (paired) {
+            donor_col <- sanitize_names(cfg$filtering$donor_col)
+            if (donor_col %in% colnames(coldata) && !donor_col %in% safe_covs) {
+                safe_covs <- c(donor_col, safe_covs)
+            }
+        }
+
+        formula_str <- build_deseq_formula(safe_covs, safe_contrast)
+        cat(sprintf("  Formula: %s\n", formula_str))
+
+        # --- Align and create DESeqDataSet ---
+        counts_mat <- counts_mat[, rownames(coldata), drop = FALSE]
+
+        dds <- DESeqDataSetFromMatrix(
+            countData = counts_mat,
+            colData   = coldata,
+            design    = as.formula(formula_str)
+        )
+        cat(sprintf("  DESeqDataSet: %d genes × %d samples\n",
+                    nrow(dds), ncol(dds)))
+
+        # --- Run DESeq2 ---
+        dds <- DESeq(dds)
+
+        # --- Extract results ---
+        control_grp      <- contrast_row$control_grp
+        experimental_grp <- contrast_row$experimental_grp
+        is_categorical   <- !is.na(control_grp) && control_grp != ""
+        lfc_shrinkage    <- isTRUE(cfg$deseq2$lfc_shrinkage)
+
+        # Initialize logger for extract function
+        log_dir <- file.path(cfg$outputs$logs_dir, contrast_id)
+        dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
+        logger <- create_logger(
+            log_dir, stratum_safe, "03",
+            contrast_id = contrast_id, biosample = stratum
+        )
+
+        deseq_out <- extract_deseq_results(
+            dds              = dds,
+            contrast_var     = safe_contrast,
+            control_grp      = if (is_categorical) control_grp else NULL,
+            experimental_grp = if (is_categorical) experimental_grp else NULL,
+            lfc_shrinkage    = lfc_shrinkage,
+            fdr_threshold    = cfg$deseq2$fdr_threshold,
+            l2fc_threshold   = cfg$deseq2$l2fc_threshold,
+            logger           = logger
+        )
+
+        cat(sprintf("  DEGs (FDR < %.2f, |LFC| > %.1f): %d\n",
+                    cfg$deseq2$fdr_threshold, cfg$deseq2$l2fc_threshold,
+                    deseq_out$n_degs))
+        if (deseq_out$shrinkage_ran) cat("  ✓ apeglm shrinkage applied\n")
+
+        # --- Write DE results ---
+        write_result(deseq_out$results,
+                     file.path(finals_dir, "results_base.tsv"))
+
+        # Write model info
+        model_info <- data.frame(formula = formula_str,
+                                 n_degs = deseq_out$n_degs,
+                                 stringsAsFactors = FALSE)
+        write_result(model_info,
+                     file.path(inter_dir, "model_info_base.csv"), sep = ",")
+
+        # Save the dds object for step 04 (RUVseq needs it)
+        saveRDS(dds, file.path(inter_dir, "dds_base.rds"))
+
+        # --- Volcano plot ---
+        plot_df <- deseq_out$results
+        lfc_col <- if ("log2FoldChange_shrunk" %in% colnames(plot_df) &&
+                       !all(is.na(plot_df$log2FoldChange_shrunk)))
+                       "log2FoldChange_shrunk" else "log2FoldChange"
+
+        p <- plot_volcano(
+            df        = plot_df,
+            lfc_col   = lfc_col,
+            padj_col  = "padj",
+            gene_col  = "gene",
+            title     = sprintf("Volcano — %s %s (base)", stratum, contrast_id),
+            fdr_line  = cfg$deseq2$fdr_threshold,
+            l2fc_line = cfg$deseq2$l2fc_threshold
+        )
+        if (!is.null(p)) {
+            pdf(file.path(plot_dir, "volcano_base.pdf"), width = 10, height = 8)
+            print(p)
+            dev.off()
+        }
+
+        cat(sprintf("  ✓ Wrote results_base.tsv, model_info, volcano\n"))
+    }
+}
+```
+
+## Quick summary: DEGs across strata
+
+```{r deg-summary}
+cat("\n═══ DEG Summary ═══\n\n")
+for (row_i in seq_len(nrow(contrasts_df))) {
+    cid <- contrasts_df$contrast_id[row_i]
+    strata <- parse_pipe_field(contrasts_df$strata[row_i])
+    for (stm in strata) {
+        path <- file.path(cfg$outputs$results_dir, cid,
+                          sanitize_names(stm), "finals", "results_base.tsv")
+        if (file.exists(path) && !is_skip_sentinel(path)) {
+            res <- read.delim(path)
+            n <- sum(!is.na(res$padj) & res$padj < 0.05, na.rm = TRUE)
+            cat(sprintf("  %s | %-20s → %d DEGs\n", cid, stm, n))
+        } else {
+            cat(sprintf("  %s | %-20s → skipped\n", cid, stm))
+        }
     }
 }
 ```

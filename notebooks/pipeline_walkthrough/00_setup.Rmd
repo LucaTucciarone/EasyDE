@@ -5,17 +5,15 @@ output: html_document
 
 # Setup
 
-This notebook loads libraries, reads the config, and defines the contrast ×
-stratum loops used by all subsequent notebooks.
+This notebook loads all EasyDE utility functions, reads the pipeline config,
+and defines the loop variables for the walkthrough.
 
-**Run this notebook first.**
+**Run this first.** All subsequent notebooks depend on the variables set here.
 
 ## Set working directory
 
-Change this to **your pipeline root** (the directory containing `Snakefile`).
-
 ```{r set-root}
-# EDIT THIS: path to your EasyDE pipeline root
+# EDIT THIS: path to your EasyDE pipeline root (where Snakefile lives)
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
@@ -26,38 +24,78 @@ cat("Working directory:", getwd(), "\n")
 
 ```{r config-choice}
 # EDIT THIS: pick your config file
+#   config/config_traits.yaml      — unpaired analysis
+#   config/config_treatments.yaml  — paired analysis
 config_path <- "config/config_treatments.yaml"
 ```
 
-## Load libraries and utilities
+## Load libraries
 
 ```{r load-libs, message=FALSE, warning=FALSE}
 suppressMessages({
     library(yaml)
     library(data.table)
     library(dplyr)
+    library(tibble)
+    library(stringr)
     library(ggplot2)
+    library(DESeq2)
+    library(RUVSeq)
+    library(EDASeq)
+    library(fgsea)
 })
+```
 
-# Source all pipeline utilities
+## Source all EasyDE utility functions
+
+The pipeline ships a set of utility modules in `workflow/scripts/utils/`.
+These are the "library" of reusable functions we'll use throughout:
+
+- **`io_utils.R`** — `load_config()`, `load_count_matrix()`, `write_result()`, `parse_pipe_field()`, `make_summary_row()`
+- **`filter_utils.R`** — `sanitize_names()`, `apply_subset_filters()`, sample/gene filtering
+- **`validation_utils.R`** — `validate_design_matrix()`, `check_zero_inflation()`, `write_preflight_row()`
+- **`stats_utils.R`** — `correlate_latent_factors()`, DESeq2 helpers
+- **`plot_utils.R`** — `plot_volcano()`, `plot_fgsea_barplot()`
+- **`logging_utils.R`** — structured logging
+
+```{r source-utils}
 for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) {
     source(f)
 }
+cat("Loaded", length(list.files("workflow/scripts/utils", pattern = "\\.R$")),
+    "utility modules\n")
 ```
 
 ## Read config and contrasts
 
 ```{r read-config}
-config_data <- load_config(config_path)
-cfg <- config_data$cfg
+config_data  <- load_config(config_path)
+cfg          <- config_data$cfg
 contrasts_df <- config_data$contrasts_df
 
-cat("Config loaded:", config_path, "\n")
-cat("Number of contrasts:", nrow(contrasts_df), "\n")
-cat("Contrast IDs:", paste(contrasts_df$contrast_id, collapse = ", "), "\n")
+cat("Config:", config_path, "\n")
+cat("Contrasts:", nrow(contrasts_df), "\n\n")
+
+# Show the contrasts table
+contrasts_df[, c("contrast_id", "contrast_var", "control_grp",
+                  "experimental_grp", "strata")]
 ```
 
-## Build the contrast × stratum loop table
+## Pipeline mode
+
+```{r pipeline-mode}
+paired <- isTRUE(cfg$steps$paired_analysis)
+cat("Paired analysis:", paired, "\n")
+cat("RUVseq enabled:", isTRUE(cfg$steps$ruvseq), "\n")
+cat("fGSEA enabled:", isTRUE(cfg$steps$fgsea), "\n")
+
+if (paired) {
+    cat("\n→ Paired mode: pipeline flow is 01 → 02 → 03 → 06 → 07\n")
+    cat("  (Steps 04 and 05 are skipped — donor blocking replaces RUVSeq)\n")
+}
+```
+
+## Build the contrast × stratum loop
 
 ```{r build-loop}
 loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
@@ -70,22 +108,6 @@ loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
     )
 }))
 
-cat(sprintf("\nTotal jobs: %d contrasts × strata combinations\n", nrow(loop_table)))
+cat(sprintf("Total: %d contrast × stratum combinations\n\n", nrow(loop_table)))
 print(loop_table)
-```
-
-## Pipeline settings summary
-
-```{r settings-summary}
-paired <- isTRUE(cfg$steps$paired_analysis)
-cat("Paired analysis:", paired, "\n")
-cat("RUVseq enabled:", isTRUE(cfg$steps$ruvseq), "\n")
-cat("fGSEA enabled:", isTRUE(cfg$steps$fgsea), "\n")
-cat("Results dir:", cfg$outputs$results_dir, "\n")
-cat("Logs dir:", cfg$outputs$logs_dir, "\n")
-
-if (paired) {
-    cat("\n** Paired mode: steps 04 and 05 will be SKIPPED **\n")
-    cat("** Pipeline flow: 01 → 02 → 03 → 06 → 07 **\n")
-}
 ```

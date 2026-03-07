@@ -3,73 +3,195 @@ title: "EasyDE Walkthrough — 07 Aggregate Results"
 output: html_document
 ---
 
-# Step 07: Aggregate Results
+# Step 07: Aggregate Results & Status Overview
 
-Runs once per contrast. Collects all per-stratum outputs and produces:
-- `contrast_summary.csv` — one row per stratum with DEG counts and status
+Runs **once per contrast**. Collects all per-stratum outputs and produces:
+- `contrast_summary.csv` — one row per stratum with DEG counts, pathway
+  counts, and pipeline status
 - `preflight_summary.csv` — preflight QC across all strata
-- `status_tile.pdf` — visual overview of which strata succeeded/skipped
-- Merged DE and fGSEA result tables across all strata
-- Aggregated log summary
+- `status_tile.pdf` — heatmap showing which strata succeeded or were skipped
+- Merged DE and fGSEA tables across all strata
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
-```
 
-## Source and run
-
-```{r source-script}
-source("workflow/scripts/07_aggregate_results.R")
-```
-
-```{r run-loop}
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr); library(ggplot2)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
 config_data <- load_config(config_path)
-contrasts_df <- config_data$contrasts_df
-cfg <- config_data$cfg
-
-for (cid in unique(contrasts_df$contrast_id)) {
-    cat(sprintf("\n=== Aggregating: %s ===\n", cid))
-    tryCatch(
-        main(config_path, cid),
-        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
-    )
-}
+cfg <- config_data$cfg; contrasts_df <- config_data$contrasts_df
+paired <- isTRUE(cfg$steps$paired_analysis)
 ```
 
-## View the summary
+## Aggregate each contrast
 
-```{r view-summary}
-for (cid in unique(contrasts_df$contrast_id)) {
-    summary_path <- file.path(cfg$outputs$results_dir, cid,
-                              "summary", "contrast_summary.csv")
-    if (file.exists(summary_path)) {
-        cat(sprintf("\n--- %s ---\n", cid))
-        summary_df <- read.csv(summary_path, check.names = FALSE)
-        print(summary_df[, c("biosample", "status", "n_degs_base",
-                              "n_pathways_base")])
+```{r aggregate-contrasts}
+for (row_i in seq_len(nrow(contrasts_df))) {
+
+    contrast_row <- contrasts_df[row_i, ]
+    contrast_id  <- contrast_row$contrast_id
+    strata       <- parse_pipe_field(contrast_row$strata)
+    summary_dir  <- file.path(cfg$outputs$results_dir, contrast_id, "summary")
+    dir.create(summary_dir, recursive = TRUE, showWarnings = FALSE)
+
+    cat(sprintf("\n══════ Aggregating: %s ══════\n", contrast_id))
+
+    # ═══════════════════════════════════════════════
+    # 1. Collect per-stratum summaries
+    # ═══════════════════════════════════════════════
+    summary_rows <- list()
+    all_de_base  <- list()
+    all_de_ruv   <- list()
+    all_fgsea_base <- list()
+    all_fgsea_ruv  <- list()
+    preflight_rows <- list()
+
+    for (stratum in strata) {
+        stratum_safe <- sanitize_names(stratum)
+        inter_dir    <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "intermediates")
+        finals_dir   <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "finals")
+
+        # Determine status
+        preflight_status <- read_preflight_status(inter_dir)
+
+        if (is.na(preflight_status)) {
+            # Coldata was never produced → filtering removed all samples
+            status <- "skipped_filtering"
+        } else if (preflight_status == "fail") {
+            status <- "skipped_preflight"
+        } else {
+            # Preflight passed — check if DESeq2 results exist
+            base_path <- file.path(finals_dir, "results_base.tsv")
+            if (!file.exists(base_path) || is_skip_sentinel(base_path)) {
+                status <- "error"
+            } else {
+                status <- "success"
+            }
+        }
+
+        cat(sprintf("  %-20s → %s\n", stratum, status))
+
+        # Count DEGs and pathways
+        n_degs_base <- n_degs_ruv <- n_pathways_base <- n_pathways_ruv <- NA
+
+        for (suffix in c("base", "ruv")) {
+            de_path <- file.path(finals_dir, sprintf("results_%s.tsv", suffix))
+            if (file.exists(de_path) && !is_skip_sentinel(de_path)) {
+                de <- read.delim(de_path)
+                n_degs <- sum(!is.na(de$padj) & de$padj < 0.05, na.rm = TRUE)
+                de$biosample <- stratum
+
+                if (suffix == "base") {
+                    n_degs_base <- n_degs
+                    all_de_base[[stratum]] <- de
+                } else {
+                    n_degs_ruv <- n_degs
+                    all_de_ruv[[stratum]] <- de
+                }
+            }
+
+            fgsea_path <- file.path(finals_dir, sprintf("fgsea_%s.tsv", suffix))
+            if (file.exists(fgsea_path) && !is_skip_sentinel(fgsea_path)) {
+                fg <- read.delim(fgsea_path)
+                n_sig <- sum(!is.na(fg$padj) & fg$padj < 0.05, na.rm = TRUE)
+                fg$biosample <- stratum
+
+                if (suffix == "base") {
+                    n_pathways_base <- n_sig
+                    all_fgsea_base[[stratum]] <- fg
+                } else {
+                    n_pathways_ruv <- n_sig
+                    all_fgsea_ruv[[stratum]] <- fg
+                }
+            }
+        }
+
+        # Collect preflight report
+        pf_report <- read_preflight_report(inter_dir)
+        if (!is.null(pf_report)) preflight_rows[[stratum]] <- pf_report
+
+        # Summary row
+        summary_rows[[stratum]] <- data.frame(
+            contrast = contrast_id,
+            biosample = stratum,
+            status = status,
+            n_degs_base = n_degs_base,
+            n_degs_ruv = n_degs_ruv,
+            n_pathways_base = n_pathways_base,
+            n_pathways_ruv = n_pathways_ruv,
+            stringsAsFactors = FALSE
+        )
     }
+
+    # ═══════════════════════════════════════════════
+    # 2. Write summary files
+    # ═══════════════════════════════════════════════
+    contrast_summary <- do.call(rbind, summary_rows)
+    write.csv(contrast_summary,
+              file.path(summary_dir, "contrast_summary.csv"),
+              row.names = FALSE)
+
+    if (length(preflight_rows) > 0) {
+        pf_summary <- do.call(rbind, preflight_rows)
+        write.csv(pf_summary,
+                  file.path(summary_dir, "preflight_summary.csv"),
+                  row.names = FALSE)
+    }
+
+    # Merged DE tables
+    if (length(all_de_base) > 0)
+        fwrite(do.call(rbind, all_de_base),
+               file.path(summary_dir,
+                         sprintf("%s_results_base.tsv", contrast_id)),
+               sep = "\t")
+    if (length(all_de_ruv) > 0)
+        fwrite(do.call(rbind, all_de_ruv),
+               file.path(summary_dir,
+                         sprintf("%s_results_ruv.tsv", contrast_id)),
+               sep = "\t")
+
+    # Merged fGSEA tables
+    if (length(all_fgsea_base) > 0)
+        fwrite(do.call(rbind, all_fgsea_base),
+               file.path(summary_dir,
+                         sprintf("%s_fgsea_base.tsv", contrast_id)),
+               sep = "\t")
+    if (length(all_fgsea_ruv) > 0)
+        fwrite(do.call(rbind, all_fgsea_ruv),
+               file.path(summary_dir,
+                         sprintf("%s_fgsea_ruv.tsv", contrast_id)),
+               sep = "\t")
+
+    cat(sprintf("  ✓ Wrote summary to %s\n", summary_dir))
 }
 ```
 
-## Status overview
+## Status tile plot (all contrasts)
 
-```{r status-overview}
-# Combine summaries across all contrasts
+This heatmap shows the pipeline status for every stratum × contrast
+combination. The numbers overlaid are the base DEG counts.
+
+```{r status-tile, fig.width=14, fig.height=8}
 all_summaries <- list()
-for (cid in unique(contrasts_df$contrast_id)) {
-    summary_path <- file.path(cfg$outputs$results_dir, cid,
-                              "summary", "contrast_summary.csv")
-    if (file.exists(summary_path)) {
-        all_summaries[[cid]] <- read.csv(summary_path, check.names = FALSE)
-    }
+for (row_i in seq_len(nrow(contrasts_df))) {
+    cid <- contrasts_df$contrast_id[row_i]
+    path <- file.path(cfg$outputs$results_dir, cid,
+                      "summary", "contrast_summary.csv")
+    if (file.exists(path))
+        all_summaries[[cid]] <- read.csv(path, check.names = FALSE)
 }
 
 if (length(all_summaries) > 0) {
     combined <- do.call(rbind, all_summaries)
 
+    # Status levels and colors
     status_levels <- c("success", "error", "skipped_preflight",
                        "skipped_filtering", "not_run")
     status_colors <- c(
@@ -88,15 +210,14 @@ if (length(all_summaries) > 0) {
     combined$label <- ifelse(!is.na(combined$n_degs_base),
                              combined$n_degs_base, "")
 
-    options(repr.plot.width = 14, repr.plot.height = max(4, length(unique(combined$contrast)) * 1.2))
-
     p <- ggplot(combined, aes(x = biosample, y = contrast, fill = status)) +
         geom_tile(color = "white", linewidth = 0.5) +
         geom_text(aes(label = label), size = 2.8, color = "black") +
         scale_fill_manual(values = status_colors, drop = FALSE) +
         labs(
             x = "Cell type", y = "Contrast", fill = "Status",
-            title = "Pipeline status (numbers = base DEGs)"
+            title = "Pipeline Status Overview",
+            subtitle = "Numbers = base DEGs (FDR < 0.05)"
         ) +
         theme_minimal(base_size = 11) +
         theme(
@@ -104,10 +225,32 @@ if (length(all_summaries) > 0) {
             panel.grid  = element_blank()
         )
     print(p)
+
+    # Save to each contrast's summary dir
+    for (cid in unique(combined$contrast)) {
+        pdf_path <- file.path(cfg$outputs$results_dir, as.character(cid),
+                              "summary", "status_tile.pdf")
+        pdf(pdf_path, width = 14, height = 8)
+        print(p)
+        dev.off()
+    }
+    cat("✓ Status tile plot saved\n")
+}
+```
+
+## Final summary table
+
+```{r final-summary}
+if (exists("combined")) {
+    cat("\n═══ Pipeline Summary ═══\n\n")
+    print(combined[, c("contrast", "biosample", "status",
+                        "n_degs_base", "n_pathways_base")])
 }
 ```
 
 ---
 
-**Pipeline complete!** Check the `summary/` directory for all outputs.
-Use the `explore_results.ipynb` notebook for deeper visualization.
+**Pipeline complete!** 🎉
+
+All results are in the `results/` directory. For deeper exploration,
+use `notebooks/explore_results.ipynb`.

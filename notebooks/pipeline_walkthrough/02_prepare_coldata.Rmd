@@ -1,72 +1,267 @@
 ---
-title: "EasyDE Walkthrough — 02 Prepare Coldata"
+title: "EasyDE Walkthrough — 02 Prepare Coldata & Preflight QC"
 output: html_document
 ---
 
-# Step 02: Filter Samples & Build Coldata
+# Step 02: Filter Samples, Build Coldata, and Preflight QC
 
 For each contrast × stratum, this step:
-- Loads and filters the count matrix
-- Builds the coldata (sample metadata aligned to counts)
-- Runs preflight quality checks (design rank, zero-inflation, etc.)
-- Writes `coldata.csv`, `counts_filtered.csv`, and `preflight.csv`
+1. Loads the raw pseudobulk count matrix
+2. Filters samples (subset filters, group matching, donor pairing)
+3. Filters genes (minimum count threshold)
+4. Checks for zero-inflation
+5. Builds the sanitized coldata for DESeq2
+6. Validates the design matrix (rank, near-singularity)
+7. Writes preflight report
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
-```
 
-## Source the script
-
-```{r source-script}
-source("workflow/scripts/02_prepare_coldata.R")
-```
-
-## Build contrast × stratum loop
-
-```{r build-loop}
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr)
+    library(tibble); library(stringr)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
 config_data <- load_config(config_path)
-contrasts_df <- config_data$contrasts_df
-
-loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
-    row <- contrasts_df[i, ]
-    strata <- parse_pipe_field(row$strata)
-    data.frame(contrast_id = row$contrast_id, stratum = strata,
-               stringsAsFactors = FALSE)
-}))
-cat(sprintf("Processing %d contrast × stratum combinations\n", nrow(loop_table)))
+cfg <- config_data$cfg; contrasts_df <- config_data$contrasts_df
+paired <- isTRUE(cfg$steps$paired_analysis)
 ```
 
-## Run the loop
+## Process all strata
 
-Each iteration filters samples and runs preflight checks for one stratum.
-Strata that fail preflight are flagged but do **not** crash — downstream
-steps will detect the preflight status and skip gracefully.
+```{r process-loop}
+for (row_i in seq_len(nrow(contrasts_df))) {
 
-```{r run-loop}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+    contrast_row <- contrasts_df[row_i, ]
+    contrast_id  <- contrast_row$contrast_id
+    strata       <- parse_pipe_field(contrast_row$strata)
 
-    tryCatch(
-        main(config_path, cid, stm),
-        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
-    )
+    for (stratum in strata) {
+        stratum_safe <- sanitize_names(stratum)
+        cat(sprintf("\n══════ %s | %s ══════\n", contrast_id, stratum))
+
+        # --- Output directories ---
+        out_dir <- file.path(cfg$outputs$results_dir, contrast_id,
+                             stratum_safe, "intermediates")
+        dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+        # --- Logger ---
+        log_dir <- file.path(cfg$outputs$logs_dir, contrast_id)
+        dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
+        logger <- create_logger(
+            log_dir, stratum_safe, "02",
+            contrast_id = contrast_id, biosample = stratum
+        )
+
+        # ═══════════════════════════════════════════════
+        # 1. Load count matrix
+        # ═══════════════════════════════════════════════
+        counts_path <- file.path(cfg$inputs$counts_dir,
+                                 paste0(stratum_safe, ".counts.csv"))
+        raw_mat <- load_count_matrix(counts_path)
+        if (is.null(raw_mat)) {
+            cat("  ✗ Count matrix not found — skipping\n"); next
+        }
+
+        gene_names <- raw_mat[[1]]
+        raw_mat    <- raw_mat[, -1, drop = FALSE]
+        rownames(raw_mat) <- gene_names
+        cat(sprintf("  Loaded: %d genes × %d samples\n",
+                    nrow(raw_mat), ncol(raw_mat)))
+
+        # ═══════════════════════════════════════════════
+        # 2. Load and filter metadata
+        # ═══════════════════════════════════════════════
+        sample_metadata <- fread(cfg$inputs$metadata_file) %>% as.data.frame()
+        biosample_id_col <- contrast_row$biosample_id_col
+        contrast_var     <- contrast_row$contrast_var
+        control_grp      <- contrast_row$control_grp
+        experimental_grp <- contrast_row$experimental_grp
+        covariates       <- parse_pipe_field(contrast_row$covariates)
+        strata_col       <- contrast_row$strata_col
+
+        # Restrict metadata to samples present in the count matrix
+        sample_metadata <- sample_metadata[
+            sample_metadata[[biosample_id_col]] %in% colnames(raw_mat), ]
+
+        # Apply subset filters (filter_col_1/filter_val_1, etc.)
+        filters <- parse_contrast_filters(contrast_row)
+        if (length(filters) > 0) {
+            for (col_name in names(filters)) {
+                allowed <- filters[[col_name]]
+                sample_metadata <- sample_metadata[
+                    sample_metadata[[col_name]] %in% allowed, ]
+            }
+            cat(sprintf("  After subset filters: %d samples\n",
+                        nrow(sample_metadata)))
+        }
+
+        # Restrict to this stratum
+        if (!is.na(strata_col) && strata_col != "") {
+            sample_metadata <- sample_metadata[
+                sample_metadata[[strata_col]] == stratum, ]
+        }
+
+        # Filter to control + experimental groups only
+        is_categorical <- !is.na(control_grp) && control_grp != ""
+        if (is_categorical) {
+            sample_metadata <- sample_metadata[
+                sample_metadata[[contrast_var]] %in%
+                    c(control_grp, experimental_grp), ]
+            cat(sprintf("  Group filter → %d samples\n",
+                        nrow(sample_metadata)))
+        }
+
+        # Paired mode: keep only donors present in BOTH groups
+        if (paired && is_categorical) {
+            donor_col <- cfg$filtering$donor_col
+            donors_ctrl <- unique(sample_metadata[
+                sample_metadata[[contrast_var]] == control_grp, donor_col])
+            donors_exp  <- unique(sample_metadata[
+                sample_metadata[[contrast_var]] == experimental_grp, donor_col])
+            paired_donors <- intersect(donors_ctrl, donors_exp)
+
+            if (length(paired_donors) == 0) {
+                cat("  ✗ No paired donors — skipping\n"); next
+            }
+            sample_metadata <- sample_metadata[
+                sample_metadata[[donor_col]] %in% paired_donors, ]
+            cat(sprintf("  Paired donors: %d (→ %d samples)\n",
+                        length(paired_donors), nrow(sample_metadata)))
+        }
+
+        if (nrow(sample_metadata) == 0) {
+            cat("  ✗ No samples remaining — skipping\n"); next
+        }
+
+        # Align count matrix to metadata
+        keep_samples <- intersect(
+            sample_metadata[[biosample_id_col]], colnames(raw_mat))
+        raw_mat <- raw_mat[, keep_samples, drop = FALSE]
+        rownames(sample_metadata) <- sample_metadata[[biosample_id_col]]
+        sample_metadata <- sample_metadata[keep_samples, ]
+
+        # ═══════════════════════════════════════════════
+        # 3. Gene filtering
+        # ═══════════════════════════════════════════════
+        min_counts     <- cfg$filtering$min_gene_counts %||% 10
+        genes_to_keep  <- rownames(raw_mat)[
+            rowSums(raw_mat) >= min_counts]
+        raw_mat <- raw_mat[genes_to_keep, , drop = FALSE]
+        cat(sprintf("  Gene filter (≥%d total counts): %d genes retained\n",
+                    min_counts, nrow(raw_mat)))
+
+        # ═══════════════════════════════════════════════
+        # 4. Zero-inflation check
+        # ═══════════════════════════════════════════════
+        zi_result <- check_zero_inflation(as.matrix(raw_mat))
+        cat(sprintf("  Zero-inflation: %.1f%% of genes have ≥1 zero%s\n",
+                    zi_result$pct_genes_with_zero,
+                    if (zi_result$zero_inflated) " ⚠ REJECTED" else ""))
+
+        # ═══════════════════════════════════════════════
+        # 5. Prepare coldata (sanitize names, set factors)
+        # ═══════════════════════════════════════════════
+        coldata_result <- prepare_coldata(
+            meta             = sample_metadata,
+            biosample_id_col = biosample_id_col,
+            contrast_var     = contrast_var,
+            covariates       = covariates,
+            scale_numeric    = isTRUE(cfg$deseq2$scale_numeric_covariates)
+        )
+        coldata      <- coldata_result$coldata
+        name_map     <- coldata_result$name_map
+        dropped_covs <- coldata_result$dropped_covariates
+
+        if (length(dropped_covs) > 0) {
+            cat(sprintf("  Dropped covariates (only 1 level): %s\n",
+                        paste(dropped_covs, collapse = ", ")))
+        }
+
+        # ═══════════════════════════════════════════════
+        # 6. Design matrix validation
+        # ═══════════════════════════════════════════════
+        safe_contrast <- sanitize_names(contrast_var)
+        active_covs   <- setdiff(sanitize_names(covariates), dropped_covs)
+        preflight_errors   <- character(0)
+        preflight_warnings <- character(0)
+
+        dm_result <- validate_design_matrix(
+            contrast_var     = safe_contrast,
+            covariates       = active_covs,
+            meta             = coldata,
+            control_grp      = if (is_categorical) control_grp else NULL,
+            experimental_grp = if (is_categorical) experimental_grp else NULL
+        )
+
+        for (w in dm_result$warnings) preflight_warnings <- c(preflight_warnings, w)
+        for (e in dm_result$errors)   preflight_errors   <- c(preflight_errors, e)
+        if (zi_result$zero_inflated)  preflight_errors   <- c(preflight_errors,
+            "100% of genes have ≥ 1 zero — data too sparse for DESeq2")
+
+        preflight_status <- if (length(preflight_errors) > 0) "fail"
+                            else if (length(preflight_warnings) > 0) "warn"
+                            else "pass"
+
+        cat(sprintf("  Preflight: %s (rank_ok=%s)\n",
+                    toupper(preflight_status), dm_result$rank_ok))
+
+        # ═══════════════════════════════════════════════
+        # 7. Write outputs
+        # ═══════════════════════════════════════════════
+        write_result(coldata, file.path(out_dir, "coldata.csv"), sep = ",",
+                     row_names = TRUE)
+        fwrite(cbind(gene = rownames(raw_mat), as.data.frame(raw_mat)),
+               file.path(out_dir, "counts_filtered.csv"))
+        write_result(
+            data.frame(original = names(name_map), sanitized = name_map,
+                       stringsAsFactors = FALSE),
+            file.path(out_dir, "name_map.csv"), sep = ","
+        )
+        write_preflight_row(
+            row_data = list(
+                contrast_id = contrast_id, stratum = stratum,
+                status = preflight_status,
+                n_genes = nrow(raw_mat), n_samples = nrow(coldata),
+                n_control = sum(coldata[[safe_contrast]] == control_grp),
+                n_experimental = sum(coldata[[safe_contrast]] == experimental_grp),
+                n_covariates_active = length(active_covs),
+                dropped_covariates = if (length(dropped_covs) > 0) paste(dropped_covs, collapse = "|") else NA,
+                rank_ok = dm_result$rank_ok,
+                near_singular_vars = NA,
+                zero_inflated = zi_result$zero_inflated,
+                pct_genes_with_zero = zi_result$pct_genes_with_zero,
+                warnings = if (length(preflight_warnings) > 0) paste(preflight_warnings, collapse = "|") else NA,
+                errors = if (length(preflight_errors) > 0) paste(preflight_errors, collapse = "|") else NA
+            ),
+            path = file.path(out_dir, "preflight.csv")
+        )
+
+        cat(sprintf("  ✓ Wrote coldata (%d samples), counts (%d genes), preflight\n",
+                    nrow(coldata), nrow(raw_mat)))
+    }
 }
 ```
 
-## Check preflight results
+## Preflight summary
 
-```{r check-preflight}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    cfg <- config_data$cfg
-    inter_dir <- file.path(cfg$outputs$results_dir, cid, stm, "intermediates")
-    status <- read_preflight_status(inter_dir)
-    cat(sprintf("  %s | %s → preflight: %s\n", cid, stm, status))
+```{r preflight-summary}
+cat("\n═══ Preflight Results ═══\n\n")
+for (row_i in seq_len(nrow(contrasts_df))) {
+    cid <- contrasts_df$contrast_id[row_i]
+    strata <- parse_pipe_field(contrasts_df$strata[row_i])
+    for (stm in strata) {
+        inter_dir <- file.path(cfg$outputs$results_dir, cid,
+                               sanitize_names(stm), "intermediates")
+        status <- read_preflight_status(inter_dir)
+        pf <- read_preflight_report(inter_dir)
+        zi_flag <- if (!is.null(pf) && "zero_inflated" %in% colnames(pf))
+                       ifelse(pf$zero_inflated[1], " [zero-inflated]", "") else ""
+        cat(sprintf("  %s | %-20s → %s%s\n", cid, stm, status, zi_flag))
+    }
 }
 ```

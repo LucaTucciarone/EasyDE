@@ -1,27 +1,105 @@
 ---
-title: "EasyDE Walkthrough — 01 Validate"
+title: "EasyDE Walkthrough — 01 Validate Inputs"
 output: html_document
 ---
 
 # Step 01: Validate Config & Contrasts
 
-This step runs once per config file. It checks that all contrasts are
-well-formed, files exist, and required columns are present.
+This step runs **once per config**. It checks:
+- All required columns exist in the contrasts CSV
+- Each contrast has matching samples in the metadata
+- Count matrix files exist for every listed stratum
+- No duplicate contrast IDs
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
+
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr); library(stringr)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
 ```
 
-## Source the script and run
+## Load config
 
-```{r run-validation}
-source("workflow/scripts/01_prepare_inputs.R")
-main(config_path)
+```{r load-config}
+config_data  <- load_config(config_path)
+cfg          <- config_data$cfg
+contrasts_df <- config_data$contrasts_df
 ```
 
-This creates a `.done` sentinel in your logs directory. If any contrasts have
-issues, they are **flagged** but not fatal — the pipeline continues with
-valid contrasts.
+## Validate each contrast
+
+```{r validate-contrasts}
+required_cols <- c("contrast_id", "contrast_var", "biosample_id_col",
+                   "control_grp", "experimental_grp", "strata")
+missing_cols  <- setdiff(required_cols, colnames(contrasts_df))
+if (length(missing_cols) > 0) {
+    stop("Missing required columns in contrasts CSV: ",
+         paste(missing_cols, collapse = ", "))
+}
+cat("✓ All required columns present\n\n")
+
+# Check for duplicate contrast IDs
+dup_ids <- contrasts_df$contrast_id[duplicated(contrasts_df$contrast_id)]
+if (length(dup_ids) > 0) {
+    stop("Duplicate contrast IDs: ", paste(dup_ids, collapse = ", "))
+}
+cat("✓ No duplicate contrast IDs\n\n")
+
+# Load metadata once
+sample_metadata <- fread(cfg$inputs$metadata_file) %>% as.data.frame()
+cat(sprintf("Sample metadata: %d rows × %d columns\n\n",
+            nrow(sample_metadata), ncol(sample_metadata)))
+
+for (i in seq_len(nrow(contrasts_df))) {
+    row <- contrasts_df[i, ]
+    cat(sprintf("━━ %s ━━\n", row$contrast_id))
+
+    # Check that the contrast variable column exists in metadata
+    if (!row$contrast_var %in% colnames(sample_metadata)) {
+        cat(sprintf("  ✗ contrast_var '%s' not found in metadata\n", row$contrast_var))
+        next
+    }
+    cat(sprintf("  contrast_var: %s\n", row$contrast_var))
+
+    # Check groups
+    group_vals <- unique(sample_metadata[[row$contrast_var]])
+    is_categorical <- !is.na(row$control_grp) && row$control_grp != ""
+
+    if (is_categorical) {
+        if (!row$control_grp %in% group_vals)
+            cat(sprintf("  ⚠ control_grp '%s' not found in data\n", row$control_grp))
+        if (!row$experimental_grp %in% group_vals)
+            cat(sprintf("  ⚠ experimental_grp '%s' not found in data\n", row$experimental_grp))
+        cat(sprintf("  contrast: %s vs %s\n", row$experimental_grp, row$control_grp))
+    } else {
+        cat("  continuous variable\n")
+    }
+
+    # Check count files for each stratum
+    strata <- parse_pipe_field(row$strata)
+    for (stm in strata) {
+        stm_safe <- sanitize_names(stm)
+        counts_path <- file.path(cfg$inputs$counts_dir,
+                                 paste0(stm_safe, ".counts.csv"))
+        exists_flag <- if (file.exists(counts_path)) "✓" else "✗"
+        cat(sprintf("  %s %s → %s\n", exists_flag, stm, basename(counts_path)))
+    }
+    cat("\n")
+}
+```
+
+## Mark validation complete
+
+```{r done-sentinel}
+done_dir <- cfg$outputs$logs_dir
+dir.create(done_dir, recursive = TRUE, showWarnings = FALSE)
+done_path <- file.path(done_dir, "01_validate.done")
+writeLines(as.character(Sys.time()), done_path)
+cat(sprintf("✓ Validation complete — sentinel: %s\n", done_path))
+```

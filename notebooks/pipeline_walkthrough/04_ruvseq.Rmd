@@ -1,85 +1,205 @@
 ---
-title: "EasyDE Walkthrough — 04 RUVseq"
+title: "EasyDE Walkthrough — 04 RUVseq Normalization"
 output: html_document
 ---
 
-# Step 04: RUVseq Normalization
+# Step 04: RUVseq — Remove Unwanted Variation
 
-> **Paired mode:** This step is automatically **skipped** when
-> `paired_analysis: true`. The donor blocking factor in the DESeq2 formula
-> already accounts for inter-individual variation, making RUVseq redundant.
+> **Paired mode:** This entire step is **skipped**. The donor blocking factor
+> in the DESeq2 formula already captures inter-individual variation.
 
-For unpaired analyses, this step uses empirical negative control genes
-(genes with high p-values from step 03) to estimate latent factors of
-unwanted variation via `RUVg`. It selects the optimal number of W factors
-(k) using an F-statistic elbow method and prunes any W factors that
-correlate with the contrast variable.
+For unpaired analyses, RUVseq identifies and removes technical batch effects
+using empirical negative control genes. Here's how:
+
+1. **Identify negative controls** — genes with high p-values (p > 0.5) from
+   the base DESeq2 results (step 03). These genes are not DE, so their
+   variation is "unwanted" technical noise.
+2. **Run RUVg** for k = 1 through max_k — each k adds another latent W factor.
+3. **Select optimal k** — compute an RLE ANOVA F-statistic for each k.
+   The "elbow" of the curve (maximum second derivative) is the optimal k.
+4. **Prune W factors** — test each W factor for correlation with the
+   contrast variable. Correlated Ws are removed to preserve real biology.
 
 ```{r setup, include=FALSE}
 pipeline_root <- normalizePath("../..")
 knitr::opts_knit$set(root.dir = pipeline_root)
 setwd(pipeline_root)
+
 config_path <- "config/config_treatments.yaml"   # EDIT THIS
+
+suppressMessages({
+    library(yaml); library(data.table); library(dplyr)
+    library(tibble); library(tidyr)
+    library(RUVSeq); library(EDASeq)
+})
+for (f in list.files("workflow/scripts/utils", pattern = "\\.R$", full.names = TRUE)) source(f)
+config_data <- load_config(config_path)
+cfg <- config_data$cfg; contrasts_df <- config_data$contrasts_df
 ```
 
-## Check if RUVseq should run
+## Check paired mode
 
-```{r check-mode}
-cfg <- suppressWarnings(yaml::read_yaml(config_path))
+```{r check-paired}
 paired <- isTRUE(cfg$steps$paired_analysis)
 
 if (paired) {
-    cat("** PAIRED MODE — this entire notebook is SKIPPED **\n")
-    cat("** Donor is already a blocking factor in the DESeq2 formula **\n")
+    cat("╔══════════════════════════════════════════════╗\n")
+    cat("║  PAIRED MODE — RUVseq is SKIPPED            ║\n")
+    cat("║  Donor blocking already handles batch.       ║\n")
+    cat("╚══════════════════════════════════════════════╝\n")
     knitr::knit_exit()
 }
 ```
 
-## Source the script and run
+## Run RUVseq for all strata
 
-```{r source-script}
-source("workflow/scripts/04_run_ruvseq.R")
-```
+```{r run-ruvseq}
+for (row_i in seq_len(nrow(contrasts_df))) {
 
-```{r build-loop}
-config_data <- load_config(config_path)
-contrasts_df <- config_data$contrasts_df
+    contrast_row <- contrasts_df[row_i, ]
+    contrast_id  <- contrast_row$contrast_id
+    strata       <- parse_pipe_field(contrast_row$strata)
 
-loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
-    row <- contrasts_df[i, ]
-    strata <- parse_pipe_field(row$strata)
-    data.frame(contrast_id = row$contrast_id, stratum = strata,
-               stringsAsFactors = FALSE)
-}))
-```
+    for (stratum in strata) {
+        stratum_safe <- sanitize_names(stratum)
+        inter_dir    <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "intermediates")
+        finals_dir   <- file.path(cfg$outputs$results_dir, contrast_id,
+                                  stratum_safe, "finals")
 
-```{r run-loop}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+        cat(sprintf("\n══════ %s | %s ══════\n", contrast_id, stratum))
 
-    tryCatch(
-        main(config_path, cid, stm),
-        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
-    )
-}
-```
+        # --- Check preflight ---
+        preflight_status <- read_preflight_status(inter_dir)
+        if (is.na(preflight_status) || preflight_status == "fail") {
+            cat("  ✗ Preflight failed — skipping\n"); next
+        }
 
-## Check optimal k per stratum
+        # --- Load counts and base results ---
+        counts_df  <- fread(file.path(inter_dir, "counts_filtered.csv")) %>%
+                      as.data.frame()
+        gene_names <- counts_df[[1]]
+        counts_mat <- as.matrix(counts_df[, -1])
+        storage.mode(counts_mat) <- "integer"
+        rownames(counts_mat) <- gene_names
 
-```{r check-k}
-for (i in seq_len(nrow(loop_table))) {
-    cid <- loop_table$contrast_id[i]
-    stm <- loop_table$stratum[i]
-    summary_path <- file.path(cfg$outputs$results_dir, cid, stm,
-                              "intermediates", "ruvseq_summary.csv")
-    if (file.exists(summary_path) && !is_skip_sentinel(summary_path)) {
-        summary <- read.csv(summary_path)
-        cat(sprintf("  %s | %s → best k = %s\n", cid, stm,
-                    summary$best_k[1]))
-    } else {
-        cat(sprintf("  %s | %s → skipped\n", cid, stm))
+        base_results <- fread(file.path(finals_dir, "results_base.tsv")) %>%
+                        as.data.frame()
+        if (is_skip_sentinel(file.path(finals_dir, "results_base.tsv"))) {
+            cat("  ✗ Base DESeq2 was skipped — skipping RUVseq\n"); next
+        }
+
+        coldata <- read.csv(file.path(inter_dir, "coldata.csv"),
+                            check.names = FALSE, row.names = 1)
+        biosample_id_col <- sanitize_names(contrast_row$biosample_id_col)
+
+        # --- Identify covariates ---
+        safe_contrast <- sanitize_names(contrast_row$contrast_var)
+        safe_covs     <- sanitize_names(parse_pipe_field(contrast_row$covariates))
+        safe_covs     <- safe_covs[safe_covs %in% colnames(coldata)]
+
+        # --- Determine max k ---
+        n_samples <- ncol(counts_mat)
+        n_covs    <- length(safe_covs)
+        max_k_cfg <- cfg$ruvseq$max_latent_factors %||% 10
+        max_k     <- min(max_k_cfg, floor(n_samples / 2) - n_covs - 1)
+        max_k     <- max(max_k, 1)
+
+        cat(sprintf("  max_k = %d (samples=%d, covs=%d)\n",
+                    max_k, n_samples, n_covs))
+
+        # ═══════════════════════════════════════════════
+        # 1. Run RUVg for all k values
+        # ═══════════════════════════════════════════════
+        empirical_thresh <- cfg$ruvseq$empirical_pval_threshold %||% 0.5
+
+        ruvseq_results <- run_ruvseq_all_k(
+            counts_mat            = counts_mat,
+            base_results          = base_results,
+            max_k                 = max_k,
+            empirical_pval_thresh = empirical_thresh
+        )
+        cat(sprintf("  Negative controls (p > %.1f): %d genes\n",
+                    empirical_thresh,
+                    sum(!is.na(base_results$pvalue) &
+                        base_results$pvalue > empirical_thresh)))
+
+        # ═══════════════════════════════════════════════
+        # 2. F-statistic elbow: find optimal k
+        # ═══════════════════════════════════════════════
+        anova_df <- compute_rle_anova(
+            ruvseq_results   = ruvseq_results,
+            biosample_id_col = biosample_id_col,
+            contrast_id      = contrast_id,
+            stratum          = stratum
+        )
+
+        # Elbow detection: maximum second derivative
+        f_vals   <- anova_df$f_statistic
+        second_d <- diff(diff(f_vals))
+        best_k   <- which.max(second_d) + 1
+        best_k   <- max(1, min(best_k, max_k))
+
+        cat(sprintf("  F-statistic elbow → best_k = %d\n", best_k))
+
+        # ═══════════════════════════════════════════════
+        # 3. Prune W factors correlated with contrast
+        # ═══════════════════════════════════════════════
+        W_best <- ruvseq_results[[best_k]]$W
+        latent_names <- paste0("W_", 1:best_k)
+        colnames(W_best) <- latent_names
+
+        coldata_W <- cbind(coldata, W_best[rownames(coldata), , drop = FALSE])
+
+        latent_corr_raw <- parse_pipe_field(contrast_row$latent_corr_vars)
+        latent_corr_vars <- sanitize_names(latent_corr_raw)
+        latent_corr_vars <- latent_corr_vars[latent_corr_vars %in% colnames(coldata)]
+
+        if (length(latent_corr_vars) > 0) {
+            ws_result <- identify_disease_ws(
+                coldata_with_W   = coldata_W,
+                latent_names     = latent_names,
+                latent_corr_vars = c(latent_corr_vars, safe_contrast),
+                contrast_var     = safe_contrast,
+                biosample_id_col = biosample_id_col
+            )
+            disease_ws <- ws_result$disease_associated_Ws
+            safe_ws    <- ws_result$safe_Ws
+        } else {
+            disease_ws <- character(0)
+            safe_ws    <- latent_names
+        }
+
+        if (length(disease_ws) > 0) {
+            cat(sprintf("  ⚠ Pruned (correlated with %s): %s\n",
+                        safe_contrast, paste(disease_ws, collapse = ", ")))
+        }
+        cat(sprintf("  Safe W factors: %s\n",
+                    if (length(safe_ws) > 0) paste(safe_ws, collapse = ", ") else "none"))
+
+        # ═══════════════════════════════════════════════
+        # 4. Write outputs
+        # ═══════════════════════════════════════════════
+        write_result(coldata_W,
+                     file.path(inter_dir, "ruvseq_best_coldata.csv"),
+                     sep = ",", row_names = TRUE)
+        write_result(anova_df,
+                     file.path(inter_dir, "ruvseq_anova.csv"), sep = ",")
+
+        ruvseq_summary <- data.frame(
+            contrast_id = contrast_id,
+            stratum     = stratum,
+            best_k      = best_k,
+            max_k_tested = max_k,
+            safe_ws     = paste(safe_ws, collapse = "|"),
+            pruned_ws   = paste(disease_ws, collapse = "|"),
+            empirical_pval_threshold = empirical_thresh,
+            stringsAsFactors = FALSE
+        )
+        write_result(ruvseq_summary,
+                     file.path(inter_dir, "ruvseq_summary.csv"), sep = ",")
+
+        cat("  ✓ Wrote ruvseq_best_coldata, ruvseq_anova, ruvseq_summary\n")
     }
 }
 ```
