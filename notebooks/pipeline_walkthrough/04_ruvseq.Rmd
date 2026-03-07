@@ -1,0 +1,85 @@
+---
+title: "EasyDE Walkthrough — 04 RUVseq"
+output: html_document
+---
+
+# Step 04: RUVseq Normalization
+
+> **Paired mode:** This step is automatically **skipped** when
+> `paired_analysis: true`. The donor blocking factor in the DESeq2 formula
+> already accounts for inter-individual variation, making RUVseq redundant.
+
+For unpaired analyses, this step uses empirical negative control genes
+(genes with high p-values from step 03) to estimate latent factors of
+unwanted variation via `RUVg`. It selects the optimal number of W factors
+(k) using an F-statistic elbow method and prunes any W factors that
+correlate with the contrast variable.
+
+```{r setup, include=FALSE}
+pipeline_root <- normalizePath("../..")
+knitr::opts_knit$set(root.dir = pipeline_root)
+setwd(pipeline_root)
+config_path <- "config/config_treatments.yaml"   # EDIT THIS
+```
+
+## Check if RUVseq should run
+
+```{r check-mode}
+cfg <- suppressWarnings(yaml::read_yaml(config_path))
+paired <- isTRUE(cfg$steps$paired_analysis)
+
+if (paired) {
+    cat("** PAIRED MODE — this entire notebook is SKIPPED **\n")
+    cat("** Donor is already a blocking factor in the DESeq2 formula **\n")
+    knitr::knit_exit()
+}
+```
+
+## Source the script and run
+
+```{r source-script}
+source("workflow/scripts/04_run_ruvseq.R")
+```
+
+```{r build-loop}
+config_data <- load_config(config_path)
+contrasts_df <- config_data$contrasts_df
+
+loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
+    row <- contrasts_df[i, ]
+    strata <- parse_pipe_field(row$strata)
+    data.frame(contrast_id = row$contrast_id, stratum = strata,
+               stringsAsFactors = FALSE)
+}))
+```
+
+```{r run-loop}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+
+    tryCatch(
+        main(config_path, cid, stm),
+        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
+    )
+}
+```
+
+## Check optimal k per stratum
+
+```{r check-k}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    summary_path <- file.path(cfg$outputs$results_dir, cid, stm,
+                              "intermediates", "ruvseq_summary.csv")
+    if (file.exists(summary_path) && !is_skip_sentinel(summary_path)) {
+        summary <- read.csv(summary_path)
+        cat(sprintf("  %s | %s → best k = %s\n", cid, stm,
+                    summary$best_k[1]))
+    } else {
+        cat(sprintf("  %s | %s → skipped\n", cid, stm))
+    }
+}
+```

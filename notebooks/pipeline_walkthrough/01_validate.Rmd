@@ -1,0 +1,27 @@
+---
+title: "EasyDE Walkthrough — 01 Validate"
+output: html_document
+---
+
+# Step 01: Validate Config & Contrasts
+
+This step runs once per config file. It checks that all contrasts are
+well-formed, files exist, and required columns are present.
+
+```{r setup, include=FALSE}
+pipeline_root <- normalizePath("../..")
+knitr::opts_knit$set(root.dir = pipeline_root)
+setwd(pipeline_root)
+config_path <- "config/config_treatments.yaml"   # EDIT THIS
+```
+
+## Source the script and run
+
+```{r run-validation}
+source("workflow/scripts/01_prepare_inputs.R")
+main(config_path)
+```
+
+This creates a `.done` sentinel in your logs directory. If any contrasts have
+issues, they are **flagged** but not fatal — the pipeline continues with
+valid contrasts.

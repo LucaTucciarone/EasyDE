@@ -1,0 +1,72 @@
+---
+title: "EasyDE Walkthrough — 02 Prepare Coldata"
+output: html_document
+---
+
+# Step 02: Filter Samples & Build Coldata
+
+For each contrast × stratum, this step:
+- Loads and filters the count matrix
+- Builds the coldata (sample metadata aligned to counts)
+- Runs preflight quality checks (design rank, zero-inflation, etc.)
+- Writes `coldata.csv`, `counts_filtered.csv`, and `preflight.csv`
+
+```{r setup, include=FALSE}
+pipeline_root <- normalizePath("../..")
+knitr::opts_knit$set(root.dir = pipeline_root)
+setwd(pipeline_root)
+config_path <- "config/config_treatments.yaml"   # EDIT THIS
+```
+
+## Source the script
+
+```{r source-script}
+source("workflow/scripts/02_prepare_coldata.R")
+```
+
+## Build contrast × stratum loop
+
+```{r build-loop}
+config_data <- load_config(config_path)
+contrasts_df <- config_data$contrasts_df
+
+loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
+    row <- contrasts_df[i, ]
+    strata <- parse_pipe_field(row$strata)
+    data.frame(contrast_id = row$contrast_id, stratum = strata,
+               stringsAsFactors = FALSE)
+}))
+cat(sprintf("Processing %d contrast × stratum combinations\n", nrow(loop_table)))
+```
+
+## Run the loop
+
+Each iteration filters samples and runs preflight checks for one stratum.
+Strata that fail preflight are flagged but do **not** crash — downstream
+steps will detect the preflight status and skip gracefully.
+
+```{r run-loop}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+
+    tryCatch(
+        main(config_path, cid, stm),
+        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
+    )
+}
+```
+
+## Check preflight results
+
+```{r check-preflight}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    cfg <- config_data$cfg
+    inter_dir <- file.path(cfg$outputs$results_dir, cid, stm, "intermediates")
+    status <- read_preflight_status(inter_dir)
+    cat(sprintf("  %s | %s → preflight: %s\n", cid, stm, status))
+}
+```

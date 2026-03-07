@@ -1,0 +1,76 @@
+---
+title: "EasyDE Walkthrough — 03 Base DESeq2"
+output: html_document
+---
+
+# Step 03: Base DESeq2 Analysis
+
+For each contrast × stratum, fits the base DESeq2 model with user-specified
+covariates. Produces `results_base.tsv` with log2 fold changes and adjusted
+p-values.
+
+In paired mode, the formula includes donor as a blocking factor
+(e.g. `~ donor_accession + treatment`).
+
+```{r setup, include=FALSE}
+pipeline_root <- normalizePath("../..")
+knitr::opts_knit$set(root.dir = pipeline_root)
+setwd(pipeline_root)
+config_path <- "config/config_treatments.yaml"   # EDIT THIS
+```
+
+## Source the script
+
+```{r source-script}
+source("workflow/scripts/03_run_deseq_base.R")
+```
+
+## Build loop
+
+```{r build-loop}
+config_data <- load_config(config_path)
+contrasts_df <- config_data$contrasts_df
+
+loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
+    row <- contrasts_df[i, ]
+    strata <- parse_pipe_field(row$strata)
+    data.frame(contrast_id = row$contrast_id, stratum = strata,
+               stringsAsFactors = FALSE)
+}))
+```
+
+## Run the loop
+
+Strata that were rejected at preflight (step 02) will be skipped
+automatically — the script detects preflight status and exits cleanly.
+
+```{r run-loop}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+
+    tryCatch(
+        main(config_path, cid, stm),
+        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
+    )
+}
+```
+
+## Quick check: how many DEGs per stratum?
+
+```{r check-degs}
+cfg <- config_data$cfg
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    results_path <- file.path(cfg$outputs$results_dir, cid, stm, "finals", "results_base.tsv")
+    if (file.exists(results_path) && !is_skip_sentinel(results_path)) {
+        res <- read.delim(results_path)
+        n_degs <- sum(!is.na(res$padj) & res$padj < 0.05, na.rm = TRUE)
+        cat(sprintf("  %s | %s → %d DEGs (padj < 0.05)\n", cid, stm, n_degs))
+    } else {
+        cat(sprintf("  %s | %s → skipped\n", cid, stm))
+    }
+}
+```

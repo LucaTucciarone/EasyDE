@@ -1,0 +1,64 @@
+---
+title: "EasyDE Walkthrough — 05 Final DESeq2"
+output: html_document
+---
+
+# Step 05: Final DESeq2 with W Factors
+
+> **Paired mode:** This step is automatically **skipped** — the base model
+> from step 03 is the final result.
+
+For unpaired analyses, this step re-fits DESeq2 with W latent factors from
+step 04 added to the formula. W factors that correlated with the contrast
+variable were already pruned in step 04.
+
+```{r setup, include=FALSE}
+pipeline_root <- normalizePath("../..")
+knitr::opts_knit$set(root.dir = pipeline_root)
+setwd(pipeline_root)
+config_path <- "config/config_treatments.yaml"   # EDIT THIS
+```
+
+## Check if this step should run
+
+```{r check-mode}
+cfg <- suppressWarnings(yaml::read_yaml(config_path))
+paired <- isTRUE(cfg$steps$paired_analysis)
+
+if (paired) {
+    cat("** PAIRED MODE — this entire notebook is SKIPPED **\n")
+    cat("** Step 03 base model IS the final model **\n")
+    knitr::knit_exit()
+}
+```
+
+## Source and run
+
+```{r source-script}
+source("workflow/scripts/05_run_deseq_final.R")
+```
+
+```{r build-loop}
+config_data <- load_config(config_path)
+contrasts_df <- config_data$contrasts_df
+
+loop_table <- do.call(rbind, lapply(seq_len(nrow(contrasts_df)), function(i) {
+    row <- contrasts_df[i, ]
+    strata <- parse_pipe_field(row$strata)
+    data.frame(contrast_id = row$contrast_id, stratum = strata,
+               stringsAsFactors = FALSE)
+}))
+```
+
+```{r run-loop}
+for (i in seq_len(nrow(loop_table))) {
+    cid <- loop_table$contrast_id[i]
+    stm <- loop_table$stratum[i]
+    cat(sprintf("\n=== [%d/%d] %s | %s ===\n", i, nrow(loop_table), cid, stm))
+
+    tryCatch(
+        main(config_path, cid, stm),
+        error = function(e) cat(sprintf("  [ERROR] %s\n", e$message))
+    )
+}
+```
