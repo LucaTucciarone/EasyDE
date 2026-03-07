@@ -96,3 +96,37 @@ EasyDE/
 | Guide | Contents |
 |-------|----------|
 | **[Installation](docs/INSTALLATION.md)** | Environment setup, verification, known issues |
+| **[Configuration](docs/CONFIGURATION.md)** | Config files, contrast definitions, data formats |
+| **[Running](docs/RUNNING.md)** | Snakemake commands, SLURM setup, step-by-step manual run |
+| **[Methods](docs/METHODS.md)** | DESeq2, RUVSeq, fGSEA, paired analysis, preflight validation |
+| **[Output](docs/OUTPUT.md)** | File tree, column descriptions, status labels |
+| **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Common errors, log reading, resource files |
+
+---
+
+## Pipeline Status Values
+
+The `contrast_summary.csv` produced by step 07 categorizes each stratum:
+
+| Status | Meaning |
+|--------|---------|
+| `success` | All steps completed, DE results produced |
+| `skipped_preflight` | Preflight rejected (rank-deficient design, zero-inflated counts) |
+| `skipped_filtering` | Sample filtering eliminated all samples (no paired donors, too few samples) |
+| `error` | Unexpected failure after preflight passed |
+
+Step 07 also generates a **status tile plot** (`status_tile.pdf`) for quick
+visual overview of which strata succeeded or were skipped.
+
+---
+
+## Exploratory Notebook
+
+After running the pipeline, use the Jupyter notebook to visualize results:
+
+```bash
+jupyter notebook notebooks/explore_results.ipynb
+```
+
+Produces DE boxplots, fGSEA heatmaps, divergent pathway analysis,
+and pipeline status overviews across all contrasts and cell types.
