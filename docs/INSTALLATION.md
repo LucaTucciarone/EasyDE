@@ -3,11 +3,34 @@
 ## 1. Install micromamba
 
 ```bash
-# macOS (Homebrew)
-brew install micromamba
+# ========= Install Micromamba (user-level) =========
+wget -O ~/micromamba.tar.bz2 https://micro.mamba.pm/api/micromamba/linux-64/latest
+tar -xvjf ~/micromamba.tar.bz2 -C ~/
+rm ~/micromamba.tar.bz2
 
-# Linux
-"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+# ========= Initialize shell integration =========
+~/bin/micromamba shell init -s bash -r ~/micromamba
+source ~/.bashrc
+
+  
+
+# ========= Verify installation =========
+which micromamba
+micromamba info
+
+# ========= Configure global settings =========
+micromamba config append channels bioconda
+micromamba config append channels conda-forge
+micromamba config append channels defaults
+micromamba config set channel_priority strict
+micromamba config set always_yes true
+micromamba config set auto_activate_base false
+micromamba config set repodata_fallback true
+
+# ========= Verify config =========
+
+micromamba config list
+
 ```
 
 ## 2. Create the environment
