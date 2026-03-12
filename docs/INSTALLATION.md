@@ -38,6 +38,9 @@ micromamba config list
 ```bash
 cd /path/to/EasyDE
 micromamba env create -f installation/EasyDE_install.yml
+
+# Or install updates:
+micromamba update -n EasyDE -f /path/to/EasyDE_install.yml # if you want to add additional packages
 ```
 
 This installs R, DESeq2, RUVSeq, fgsea, Snakemake, and all dependencies.
