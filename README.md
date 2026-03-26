@@ -2,8 +2,7 @@
 
 A modular R pipeline for pseudobulk differential expression analysis with
 RUVseq correction and gene set enrichment. Designed for scRNA-seq data
-([PanKbase](workflow/scripts/fetch/PANKBASE.md) and similar resources)
-but works with any pseudobulk count matrices.
+(PanKbase and similar resources) but works with any pseudobulk count matrices.
 
 Orchestrated by Snakemake for local or SLURM cluster execution.
 
@@ -11,7 +10,7 @@ Orchestrated by Snakemake for local or SLURM cluster execution.
 
 ## Pipeline Overview
 
-Seven sequential steps. Steps 02–06 run in parallel across every
+Nine steps. Steps 02–07 run in parallel across every
 **contrast × stratum** (cell type) combination:
 
 ```
@@ -21,12 +20,18 @@ Seven sequential steps. Steps 02–06 run in parallel across every
 04  RUVseq normalization + k selection   (per contrast × stratum)  ← skipped in paired mode
 05  Final DESeq2 with W factors          (per contrast × stratum)  ← skipped in paired mode
 06  fGSEA pathway enrichment             (per contrast × stratum)
-07  Aggregate results + status plot      (once per contrast)
+07  Benchmark against gene signatures    (per contrast × stratum)  ← optional
+08  Aggregate results + status plot      (once per contrast)
+09  Pipeline summary heatmap             (once after all contrasts)
 ```
 
 Step 02 includes **preflight validation** — checks for design matrix rank,
-zero-inflation, and data quality issues. Rejected strata are skipped cleanly
-through the rest of the pipeline.
+zero-inflation, sample sufficiency, and data quality issues. Rejected strata
+are skipped cleanly through the rest of the pipeline, saving compute time.
+The pipeline also handles several edge cases automatically: `poscounts`
+normalization for sparse count matrices, factor coercion for logical columns,
+second-pass covariate drops, and graceful RUV-to-base fallback. See
+[Methods — Edge Cases](docs/METHODS.md#edge-cases-and-workarounds) for details.
 
 ---
 
@@ -70,14 +75,15 @@ EasyDE/
 ├── data/                                 ← YOUR DATA (or fetched from PanKbase)
 │   ├── counts/                           ← one CSV per cell type
 │   └── sample_metadata.csv
-├── resources/gsea_files/                 ← shipped with the repo
+├── resources/
+│   ├── gsea_files/                      ← pathway GMT files + gene exclusion lists
+│   └── benchmarking/                    ← master gene signatures for step 07
 ├── workflow/scripts/                     ← pipeline code (do not edit)
-│   ├── 01–07_*.R                         ← pipeline steps
+│   ├── 01–09_*.R                         ← pipeline steps
 │   ├── fetch/                            ← PanKbase data adapter
 │   └── utils/                            ← shared R utilities
 ├── notebooks/                            ← post-run exploration
-│   ├── explore_results.ipynb
-│   └── pipeline_walkthrough/             ← interactive step-by-step (R Markdown)
+│   └── explore_results.ipynb
 ├── docs/                                 ← detailed documentation
 └── installation/
     └── EasyDE_install.yml
@@ -99,25 +105,34 @@ EasyDE/
 | **[Installation](docs/INSTALLATION.md)** | Environment setup, verification, known issues |
 | **[Configuration](docs/CONFIGURATION.md)** | Config files, contrast definitions, data formats |
 | **[Running](docs/RUNNING.md)** | Snakemake commands, SLURM setup, step-by-step manual run |
-| **[Methods](docs/METHODS.md)** | DESeq2, RUVSeq, fGSEA, paired analysis, preflight validation |
-| **[Output](docs/OUTPUT.md)** | File tree, column descriptions, status labels |
+| **[Methods](docs/METHODS.md)** | DESeq2, RUVSeq (W exclusion strategy), fGSEA, signature benchmarking, paired analysis, preflight validation |
+| **[Output](docs/OUTPUT.md)** | File tree, column descriptions, best-model file, status taxonomy |
 | **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Common errors, log reading, resource files |
+| **[Future Features](docs/FUTURE_FEATURES.md)** | Designed improvements not yet implemented |
 
 ---
 
 ## Pipeline Status Values
 
-The `contrast_summary.csv` produced by step 07 categorizes each stratum:
+The `contrast_summary.csv` produced by step 08 categorizes each stratum with
+a fine-grained status taxonomy:
 
 | Status | Meaning |
 |--------|---------|
-| `success` | All steps completed, DE results produced |
-| `skipped_preflight` | Preflight rejected (rank-deficient design, zero-inflated counts) |
-| `skipped_filtering` | Sample filtering eliminated all samples (no paired donors, too few samples) |
-| `error` | Unexpected failure after preflight passed |
+| `success` | RUVseq model ran successfully; full DE results produced |
+| `success_base_only` | Base DESeq2 succeeded but RUV was skipped or failed (e.g. paired mode, RUV crash) |
+| `skipped_no_samples` | Zero samples remained after filtering |
+| `skipped_min_group` | Fewer than 3 control or experimental samples |
+| `skipped_no_pairs` | No valid donor pairs found (paired contrasts only) |
+| `skipped_preflight` | Design matrix rejected by preflight checks (rank-deficient, zero-inflated) |
+| `skipped` | Other skip reason — check `error_message` column for details |
+| `error` | DESeq2 or downstream step crashed — `error_message` populated |
+| `not_run` | No log or output data found for this stratum |
 
-Step 07 also generates a **status tile plot** (`status_tile.pdf`) for quick
-visual overview of which strata succeeded or were skipped.
+Step 08 also generates a per-contrast **status overview heatmap** (`status_overview.pdf`)
+showing status and DEG counts across all strata at a glance. After all contrasts
+complete, step 09 generates a **pipeline-level status heatmap**
+(`pipeline_status_overview.pdf`) spanning all contrasts × cell types.
 
 ---
 
@@ -129,12 +144,13 @@ After running the pipeline, use the Jupyter notebook to visualize results:
 jupyter notebook notebooks/explore_results.ipynb
 ```
 
-Produces DE boxplots, fGSEA heatmaps, divergent pathway analysis,
-and pipeline status overviews across all contrasts and cell types.
+The notebook includes:
 
-### Interactive walkthrough
+| Section | Content |
+|---------|---------|
+| Load & boxplots | Load results including `_deseq_final.tsv`, DEG boxplots with model indicator (circle = RUVseq, triangle = Base) |
+| fGSEA & status | Pathway heatmaps, divergent pathway analysis, fine-grained status overview |
+| Export | Per-stratum files as `{stratum}--{contrast}--{model}.DESEQ2.tsv` |
+| Ensembl mapping | biomaRt gene symbol → Ensembl ID conversion |
+| PankBase manifest | Submission manifest with NFS paths, S3 URLs, file aliases, MD5 placeholders |
 
-For teaching or exploration, use the **pipeline walkthrough notebooks** in
-`notebooks/pipeline_walkthrough/`. These are R Markdown notebooks that run
-the full pipeline step-by-step using simple `for` loops instead of Snakemake.
-See the [walkthrough README](notebooks/pipeline_walkthrough/README.md).
