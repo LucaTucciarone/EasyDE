@@ -21,7 +21,7 @@ Nine steps. Steps 02–07 run in parallel across every
 05  Final DESeq2 with W factors          (per contrast × stratum)  ← skipped in paired mode
 06  fGSEA pathway enrichment             (per contrast × stratum)
 07  Benchmark against gene signatures    (per contrast × stratum)  ← optional
-08  Aggregate results + status plot      (once per contrast)
+08  Aggregate results + HTML drilldowns  (once per contrast)
 09  Pipeline summary heatmap             (once after all contrasts)
 ```
 
@@ -77,7 +77,8 @@ EasyDE/
 │   └── sample_metadata.csv
 ├── resources/
 │   ├── gsea_files/                      ← pathway GMT files + gene exclusion lists
-│   └── benchmarking/                    ← master gene signatures for step 07
+│   ├── pathway_drilldown/               ← mega_sets.tsv for positive HTML drilldown
+│   └── benchmarking/                    ← master gene signatures for steps 07 + 08
 ├── workflow/scripts/                     ← pipeline code (do not edit)
 │   ├── 01–09_*.R                         ← pipeline steps
 │   ├── fetch/                            ← PanKbase data adapter
@@ -131,9 +132,12 @@ a fine-grained status taxonomy:
 | `error` | DESeq2 or downstream step crashed — `error_message` populated |
 | `not_run` | No log or output data found for this stratum |
 
-Step 08 also generates a per-contrast **status overview heatmap** (`status_overview.pdf`)
-showing status and DEG counts across all strata at a glance. After all contrasts
-complete, step 09 generates a **pipeline-level status heatmap**
+Step 08 also generates:
+- A per-contrast **status overview heatmap** (`status_overview.pdf`) showing status and DEG counts across all strata
+- **`positive_benchmarking.html`** — interactive 3-level fGSEA pathway drilldown (mega-sets × cell types)
+- **`negative_benchmarking.html`** — interactive 3-level drilldown for LLM-curated artifact/confounder signatures
+
+After all contrasts complete, step 09 generates a **pipeline-level status heatmap**
 (`pipeline_status_overview.pdf`) spanning all contrasts × cell types.
 
 ---

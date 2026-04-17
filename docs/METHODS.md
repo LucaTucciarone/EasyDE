@@ -322,23 +322,14 @@ Per-stratum output is written to
 
 ### Benchmark visualization
 
-Benchmark heatmaps are generated at two levels:
-
 **Per-stratum (step 07)** — in `{stratum}/benchmarking/`:
-- **`benchmark_positive.pdf`** — FORA overlap heatmap for positive controls
-- **`benchmark_negative.pdf`** — FORA overlap heatmap for negative controls
-- **`benchmark_collapsed.pdf`** — class-level collapsed heatmap
+- **`benchmark_signatures.tsv`** — full FORA + fGSEA results vs all tested signatures
 
-**Per-contrast (step 08)** — in `summary/`, comparing across strata:
-- **`benchmark_base_positive.pdf`** — multi-stratum heatmap, base model, positive controls
-- **`benchmark_base_negative.pdf`** — multi-stratum heatmap, base model, negative controls
-- **`benchmark_base_collapsed.pdf`** — multi-stratum, base model, class-level
-- **`benchmark_ruv_positive.pdf`** — multi-stratum heatmap, RUV model, positive controls
-- **`benchmark_ruv_negative.pdf`** — multi-stratum heatmap, RUV model, negative controls
-- **`benchmark_ruv_collapsed.pdf`** — multi-stratum, RUV model, class-level
+**Per-contrast (step 08)** — interactive HTML in `summary/`:
+- **`positive_benchmarking.html`** — fGSEA pathway results across all cell types, organized by curated mega-sets; 3-level expandable drill-down (mega-set → pathway → leading-edge genes)
+- **`negative_benchmarking.html`** — fGSEA enrichment of LLM-curated artifact and confounder signatures across all cell types; 3-level drill-down (class → individual signature → leading-edge genes)
 
-Heatmaps use nested facets (category → class) with color-coded strip
-backgrounds when the new signature schema is detected.
+Both HTML files are self-contained (no external dependencies) and sized ~6–20 MB depending on the number of cell types and pathways. See [Output — Interactive HTML Outputs](OUTPUT.md#interactive-html-outputs-step-08) for details on the structure and toggle behavior.
 
 ### Usage
 

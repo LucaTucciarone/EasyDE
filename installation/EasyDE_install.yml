@@ -50,6 +50,12 @@ dependencies:
   - r-hmisc
   - r-stringi
 
+  # --- HTML drilldown outputs (step 08) ---
+  - r-reactable
+  - r-htmltools
+  - r-htmlwidgets
+  - r-base64enc
+
   # --- Optional ---
   - r-msigdbr
   - r-rocr

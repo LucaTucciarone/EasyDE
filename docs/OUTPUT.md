@@ -51,13 +51,9 @@ results/
         ├── {contrast}_deseq_ruv.tsv             merged RUV DE (all strata)
         ├── {contrast}_fgsea_base.tsv            merged base fGSEA (all strata)
         ├── {contrast}_fgsea_ruv.tsv             merged RUV fGSEA (all strata)
-        ├── {contrast}_benchmark_signatures.tsv  merged benchmark results (all strata)
-        ├── benchmark_base_positive.pdf          multi-stratum heatmap: base model positive controls
-        ├── benchmark_base_negative.pdf          multi-stratum heatmap: base model negative controls
-        ├── benchmark_base_collapsed.pdf         multi-stratum heatmap: base model class-level
-        ├── benchmark_ruv_positive.pdf           multi-stratum heatmap: RUV model positive controls
-        ├── benchmark_ruv_negative.pdf           multi-stratum heatmap: RUV model negative controls
-        ├── benchmark_ruv_collapsed.pdf          multi-stratum heatmap: RUV model class-level
+        ├── {contrast}_fgsea_final.tsv           best-model fGSEA (RUV preferred, Base fallback)
+        ├── positive_benchmarking.html           interactive pathway drilldown (fGSEA × mega-sets)
+        ├── negative_benchmarking.html           interactive negative controls drilldown (LLM signatures)
         ├── errors.log                           errors only (if any)
         ├── warnings.log                         warnings only (if any)
         └── log_summary.tsv                      all flagged log lines
@@ -97,6 +93,38 @@ This file selects RUVseq results where available (`success` strata) and falls
 back to Base DESeq2 for `success_base_only` strata. It is the recommended
 input for downstream analyses that need a single best-effort result per gene
 per cell type.
+
+### fGSEA best-model consolidated file
+
+`{contrast}_fgsea_final.tsv` mirrors the `_deseq_final.tsv` logic for pathway results: RUVseq fGSEA where available, base fGSEA for strata where only base ran. Same schema as `_fgsea_base.tsv` / `_fgsea_ruv.tsv`. Used as the data source for `positive_benchmarking.html`.
+
+---
+
+## Interactive HTML Outputs (step 08)
+
+Two self-contained HTML files are generated per contrast (requires `pathway_drilldown.enabled: true` in config):
+
+### `positive_benchmarking.html`
+
+Three-level interactive drill-down for fGSEA pathway results across all cell types:
+
+- **Level 1 (L1):** Mega-sets — curated groupings of Reactome/KEGG/Hallmark pathways into biological concepts (e.g. `ER_STRESS_UPR`, `APOPTOSIS`, `INSULIN_SECRETION`). One row per mega-set; NES columns per cell type, colored by direction and magnitude.
+- **Level 2 (L2):** Member pathways within a mega-set. Expand any L1 row to see individual pathway NES scores.
+- **Level 3 (L3):** Leading-edge genes for a specific pathway × cell-type cell. Expand any L2 cell to see gene-level log2FC and padj.
+
+NES cells are colored red (positive) / blue (negative) by default. "Highlight significant" toggle fades non-significant cells and pops significant ones.
+
+Mega-set definitions come from `resources/pathway_drilldown/mega_sets.tsv` (configurable).
+
+### `negative_benchmarking.html`
+
+Same three-level structure, but uses LLM-curated artifact and confounder gene signatures from `resources/benchmarking/master_gene_signatures.tsv` (negative control rows only):
+
+- **L1:** Signature class (e.g. `dissociation_stress`, `sex`, `BMI`, `smoking`). fGSEA run on the union of all class genes.
+- **L2:** Individual signatures within the class.
+- **L3:** Leading-edge genes with DE stats.
+
+Color scheme: artifact classes in red, subject_confounder classes in purple. Significant highlight is ON by default (unexpected enrichment warrants attention).
 
 ---
 

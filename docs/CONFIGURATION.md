@@ -68,6 +68,26 @@ Genes as rows, samples as columns. First column is the gene symbol.
 
 ---
 
+## Pathway Drilldown Configuration
+
+Step 08 generates two interactive HTML files per contrast when `pathway_drilldown.enabled: true`.
+
+```yaml
+pathway_drilldown:
+  enabled: true
+  mega_sets:     "resources/pathway_drilldown/mega_sets.tsv"   # curated pathway groupings
+  negative_sigs: "resources/benchmarking/master_gene_signatures.tsv"  # LLM-curated signatures
+  hallmark_gmt:  "resources/gsea_files/hallmark.gmt"           # Hallmark gene sets
+```
+
+All paths are relative to the pipeline root. Set `enabled: false` to skip both HTMLs.
+
+**`mega_sets.tsv`** — defines which Reactome/KEGG/Hallmark pathways belong to each biological concept (mega-set). Each row maps a pathway ID to a `mega_id` and `mega_label`. Ships with 61 curated mega-sets covering core diabetes-relevant biology. Customize freely — any pathway IDs not in this file are omitted from `positive_benchmarking.html`.
+
+If `mega_sets` or `hallmark_gmt` is missing, `positive_benchmarking.html` is skipped with a warning. If `negative_sigs` is missing, `negative_benchmarking.html` is skipped.
+
+---
+
 ## Benchmarking Configuration
 
 Signature benchmarking (step 07) is enabled when `benchmarking.signature_file`

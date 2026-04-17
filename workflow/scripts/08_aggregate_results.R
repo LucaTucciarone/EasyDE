@@ -388,6 +388,7 @@ collect_fgsea <- function(strata, results_dir, file_name) {
 
 main <- function(config_path, contrast_id) {
 
+    config_path  <- normalizePath(config_path, mustWork = FALSE)
     loaded       <- load_config(config_path)
     cfg          <- loaded$cfg
     contrasts_df <- loaded$contrasts_df
@@ -547,17 +548,26 @@ main <- function(config_path, contrast_id) {
         write_result(fgsea_ruv, file.path(summary_dir, paste0(contrast_id, "_fgsea_ruv.tsv")))
     }
 
-    # --- 5. Consolidated benchmark signatures ---
-    bench_rows <- lapply(strata, function(s) {
-        bench_path <- file.path(results_dir, s, "benchmarking", "benchmark_signatures.tsv")
-        safe_read(bench_path)
-    })
-    bench_all <- do.call(rbind, Filter(Negate(is.null), bench_rows))
-    if (!is.null(bench_all) && nrow(bench_all) > 0) {
-        write_result(bench_all,
-                     file.path(summary_dir, paste0(contrast_id, "_benchmark_signatures.tsv")))
-        cat(sprintf("  Benchmark signatures: %d rows across %d strata\n",
-                    nrow(bench_all), length(unique(bench_all$stratum))))
+    # --- 5. fGSEA final: RUVseq where available, base fallback ---
+    ruv_strata_fg  <- if (!is.null(fgsea_ruv))  unique(fgsea_ruv$stratum)  else character(0)
+    base_strata_fg <- if (!is.null(fgsea_base)) unique(fgsea_base$stratum) else character(0)
+    base_only_fg   <- setdiff(base_strata_fg, ruv_strata_fg)
+
+    fgsea_final_parts <- list()
+    if (!is.null(fgsea_ruv) && nrow(fgsea_ruv) > 0)
+        fgsea_final_parts[["ruv"]] <- fgsea_ruv
+    if (length(base_only_fg) > 0 && !is.null(fgsea_base)) {
+        base_fb_fg <- fgsea_base[fgsea_base$stratum %in% base_only_fg, , drop = FALSE]
+        if (nrow(base_fb_fg) > 0) fgsea_final_parts[["base_fb"]] <- base_fb_fg
+    }
+    if (length(fgsea_final_parts) > 0) {
+        fgsea_final <- do.call(rbind, fgsea_final_parts)
+        rownames(fgsea_final) <- NULL
+        write_result(fgsea_final,
+                     file.path(summary_dir, paste0(contrast_id, "_fgsea_final.tsv")))
+        cat(sprintf("  fGSEA final: %d strata (%d RUVseq, %d Base fallback)\n",
+                    length(unique(fgsea_final$stratum)),
+                    length(ruv_strata_fg), length(base_only_fg)))
     }
 
     # =====================================================================
@@ -663,60 +673,22 @@ main <- function(config_path, contrast_id) {
     }
 
     # =====================================================================
-    # Benchmark signature plots
+    # HTML drilldown outputs (positive pathway + negative controls)
     # =====================================================================
 
-    if (!is.null(bench_all) && nrow(bench_all) > 0) {
-        tryCatch({
-            # plot_utils.R already sourced above for status heatmap
-
-            # --- FORA-based specificity heatmaps (summary: strata on x-axis) ---
-            bench_fora <- bench_all[bench_all$test == "fora", ]
-            n_strata <- length(unique(bench_all$stratum))
-            has_control_type <- "control_type" %in% colnames(bench_fora)
-
-            if (nrow(bench_fora) > 0) {
-
-                # Collapsed (class-level) data
-                bench_collapsed <- collapse_benchmark_by_class(bench_fora)
-
-                # Summary plots: 3 per model (base, ruv) x (positive, negative, collapsed)
-                for (mc in list(list(gs = "base", label = "Base"),
-                                list(gs = "ruv",  label = "RUV"))) {
-
-                    save_heatmap(plot_fora_heatmap(
-                        bench_fora,
-                        control_type_val = if (has_control_type) "positive" else NULL,
-                        categories_filter = if (!has_control_type) "cell_identity" else NULL,
-                        title = sprintf("%s -- %s -- Positive Controls", contrast_id, mc$label),
-                        fill_color = "#2E8B57", fill_limit = 0.6,
-                        x_var = "stratum", gene_set_filter = mc$gs
-                    ), file.path(summary_dir, sprintf("benchmark_%s_positive.pdf", mc$gs)))
-
-                    save_heatmap(plot_fora_heatmap(
-                        bench_fora,
-                        control_type_val = if (has_control_type) "negative" else NULL,
-                        categories_filter = if (!has_control_type) c("artifact", "subject_confounder") else NULL,
-                        title = sprintf("%s -- %s -- Negative Controls", contrast_id, mc$label),
-                        fill_color = "#D94040", fill_limit = 0.5,
-                        x_var = "stratum", gene_set_filter = mc$gs
-                    ), file.path(summary_dir, sprintf("benchmark_%s_negative.pdf", mc$gs)))
-
-                    if (!is.null(bench_collapsed) && nrow(bench_collapsed) > 0) {
-                        save_heatmap(plot_fora_heatmap(
-                            bench_collapsed,
-                            title = sprintf("%s -- %s -- Class-Level Collapsed", contrast_id, mc$label),
-                            fill_color = "#7B3294", fill_limit = 0.3,
-                            collapsed = TRUE,
-                            x_var = "stratum", gene_set_filter = mc$gs
-                        ), file.path(summary_dir, sprintf("benchmark_%s_collapsed.pdf", mc$gs)))
-                    }
-                }
-            }
-
-        }, error = function(e) {
-            cat(sprintf("  [WARN] Could not generate benchmark plots: %s\n", e$message))
-        })
+    if (isTRUE(cfg$pathway_drilldown$enabled)) {
+        pipeline_root <- dirname(dirname(normalizePath(.script_dir)))
+        source(file.path(.script_dir, "utils", "drilldown_html_utils.R"))
+        tryCatch(
+            generate_positive_drilldown(results_dir, contrast_id, strata,
+                                        cfg, pipeline_root, summary_dir),
+            error = function(e)
+                cat(sprintf("  [WARN] positive drilldown failed: %s\n", e$message)))
+        tryCatch(
+            generate_negative_drilldown(results_dir, contrast_id, strata,
+                                        cfg, pipeline_root, summary_dir),
+            error = function(e)
+                cat(sprintf("  [WARN] negative drilldown failed: %s\n", e$message)))
     }
 
     cat("\n-- Complete ----------------------------------------------------------\n")
