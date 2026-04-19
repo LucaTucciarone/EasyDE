@@ -446,7 +446,8 @@ generate_positive_drilldown <- function(contrast_dir, contrast_id, strata,
   for (s in strata_cols) l1_cols[[paste0(s, "__padj")]] <- colDef(show = FALSE)
 
   l1_tbl <- reactable(mega_table, columns = l1_cols,
-    groupBy = "category",
+    elementId = "pos_l1",
+    groupBy = c("category", "subcategory"),
     rowClass = function(index) if (!mega_table$sig_any[index]) "nonsig-l1" else NULL,
     details = function(index) {
       mid <- mega_table$mega_set_id[index]
@@ -475,7 +476,18 @@ generate_positive_drilldown <- function(contrast_dir, contrast_id, strata,
     "Click \u25b6 to expand a mega-set into its member pathways, then expand a pathway to see ",
     "leading-edge genes with per-stratum log2FC and padj from DESeq2 (RUVseq where available, base otherwise).")
 
-  page <- assemble_page(contrast_id, l1_tbl, legend, how_to,
+  subcats <- sort(unique(mega_table$subcategory))
+  tissue_filter <- tags$div(
+    style = "margin:6px 0 12px;display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;",
+    tags$b(style = "color:#333;", "Filter by subcategory:"),
+    tags$select(
+      style = "font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid #ccc;cursor:pointer;",
+      onchange = "Reactable.setFilter('pos_l1', 'subcategory', this.value || undefined)",
+      tags$option(value = "", "\u2014 all \u2014"),
+      lapply(subcats, function(s) tags$option(value = s, s))
+    )
+  )
+  page <- assemble_page(contrast_id, l1_tbl, legend, tagList(how_to, tissue_filter),
                         sprintf("%s - pathway drilldown", contrast_id),
                         default_highlight = FALSE)
   save_html(page, out_html)
