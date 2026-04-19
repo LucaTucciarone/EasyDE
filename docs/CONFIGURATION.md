@@ -82,7 +82,14 @@ pathway_drilldown:
 
 All paths are relative to the pipeline root. Set `enabled: false` to skip both HTMLs.
 
-**`mega_sets.tsv`** — defines which Reactome/KEGG/Hallmark pathways belong to each biological concept (mega-set). Each row maps a pathway ID to a `mega_id` and `mega_label`. Ships with 61 curated mega-sets covering core diabetes-relevant biology. Customize freely — any pathway IDs not in this file are omitted from `positive_benchmarking.html`.
+**`mega_sets.tsv`** — defines which Reactome/KEGG/Hallmark pathways belong to each biological concept (mega-set). Ships with two ready-made files:
+
+| File | Use case | Categories |
+|------|----------|------------|
+| `resources/pathway_drilldown/mega_sets.tsv` | Multi-tissue studies (default) | **Disease** + **Physiology** (both by tissue: Heart, Vasculature, Muscle, Adipose, Liver, Kidney, Pancreas, Hypothalamus, Cross-tissue) + Immune, Metabolism, Stress, Signaling |
+| `resources/pathway_drilldown/mega_sets_pankbase.tsv` | Pancreas / PanKbase-focused studies | Disease (Diabetes/Autoimmunity), Immune, Cell identity (Beta/Alpha/Exocrine), Metabolism, Stress, Signaling |
+
+Point `pathway_drilldown.mega_sets` to whichever file fits your tissue panel. Customize either file freely — any pathway IDs not present are skipped silently.
 
 If `mega_sets` or `hallmark_gmt` is missing, `positive_benchmarking.html` is skipped with a warning. If `negative_sigs` is missing, `negative_benchmarking.html` is skipped.
 

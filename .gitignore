@@ -11,6 +11,12 @@ logs/
 # --- Cluster-specific submission records (hardcoded paths, not portable) ---
 config/TSCC_config_Run_452026_allTraits.yaml
 
+# --- Local-only configs and contrast files ---
+config/config_functional_traits_local.yaml
+contrasts/contrasts_functional_traits.csv
+contrasts/contrasts_test_nd_t1d.csv
+contrasts/contrasts_test_plus_fix.csv
+
 # --- R artifacts ---
 .Rhistory
 .RData

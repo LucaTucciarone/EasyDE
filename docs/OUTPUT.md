@@ -108,13 +108,15 @@ Two self-contained HTML files are generated per contrast (requires `pathway_dril
 
 Three-level interactive drill-down for fGSEA pathway results across all cell types:
 
-- **Level 1 (L1):** Mega-sets — curated groupings of Reactome/KEGG/Hallmark pathways into biological concepts (e.g. `ER_STRESS_UPR`, `APOPTOSIS`, `INSULIN_SECRETION`). One row per mega-set; NES columns per cell type, colored by direction and magnitude.
+- **Level 1 (L1):** Mega-sets — curated groupings of Reactome/KEGG/Hallmark pathways into biological concepts. Grouped first by **category** (e.g. Disease, Physiology, Immune), then by **subcategory** (tissue or system: Heart, Liver, Pancreas, …). One row per mega-set; NES columns per cell type, colored by direction and magnitude.
 - **Level 2 (L2):** Member pathways within a mega-set. Expand any L1 row to see individual pathway NES scores.
-- **Level 3 (L3):** Leading-edge genes for a specific pathway × cell-type cell. Expand any L2 cell to see gene-level log2FC and padj.
+- **Level 3 (L3):** Leading-edge genes for a specific pathway × cell-type. Expand any L2 row to see gene-level log2FC and padj.
 
-NES cells are colored red (positive) / blue (negative) by default. "Highlight significant" toggle fades non-significant cells and pops significant ones.
+**Navigation:** use the **"Filter by subcategory"** dropdown above the table to narrow to one tissue/system at a time. The L1 filter toggles ("only significant in ≥1 cell type") and the "Highlight significant" display toggle apply on top of the subcategory filter.
 
-Mega-set definitions come from `resources/pathway_drilldown/mega_sets.tsv` (configurable).
+NES cells are colored red (positive) / blue (negative). Significance stars: * padj<0.05, ** <0.01, *** <0.001.
+
+Mega-set definitions come from `resources/pathway_drilldown/mega_sets.tsv` (configurable — see [Configuration](CONFIGURATION.md#pathway-drilldown-configuration)).
 
 ### `negative_benchmarking.html`
 

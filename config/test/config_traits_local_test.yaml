@@ -177,8 +177,8 @@ fgsea:
 # -----------------------------------------------------------------------------
 # PATHWAY DRILLDOWN (step 08)
 # Generates two self-contained HTML files per contrast:
-#   pathway_drilldown.html        — positive: fGSEA mega-sets, 3-level drill-down
-#   negative_controls_drilldown.html — negative: LLM-curated artifact/confounder sigs
+#   positive_benchmarking.html    — positive: fGSEA mega-sets, 3-level drill-down
+#   negative_benchmarking.html    — negative: LLM-curated artifact/confounder sigs
 # Set enabled: false to skip both.
 # Paths are relative to the pipeline root directory.
 # -----------------------------------------------------------------------------
