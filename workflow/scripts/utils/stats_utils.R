@@ -73,8 +73,12 @@ correlate_latent_vars <- function(meta, latent_names, correlate_vars) {
                 # For heatmap display: use the coefficient with the largest
                 # absolute t-statistic (preserves sign/direction for visual)
                 non_intercept <- coefs[-1, , drop = FALSE]
-                best_row <- which.max(abs(non_intercept[, 3]))
-                t_mat[v, x] <- non_intercept[best_row, 3]
+                if (nrow(non_intercept) == 0) {
+                    t_mat[v, x] <- NA
+                } else {
+                    best_row <- which.max(abs(non_intercept[, 3]))
+                    t_mat[v, x] <- non_intercept[best_row, 3]
+                }
             }
         }
     }

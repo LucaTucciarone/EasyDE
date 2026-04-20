@@ -567,7 +567,7 @@ main <- function(config_path, contrast_id, stratum) {
     surviving_covs <- setdiff(sanitize_names(covariates), dropped_covs)
     for (v in surviving_covs) {
         if (v %in% colnames(coldata)) {
-            n_missing <- sum(is.na(coldata[[v]]))
+            n_missing <- sum(is.na(coldata[[v]]) | (is.character(coldata[[v]]) & trimws(coldata[[v]]) == ""))
             if (n_missing > 0) {
                 dropped_covs <- c(dropped_covs, v)
                 drop_reasons <- c(drop_reasons,
