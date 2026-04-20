@@ -160,15 +160,13 @@ main <- function(config_path, contrast_id, stratum) {
     contrast_var     <- trimws(contrast_row$contrast_var)
     control_grp      <- trimws(contrast_row$control_grp)
     experimental_grp <- trimws(contrast_row$experimental_grp)
-    covariates_raw   <- parse_pipe_field(contrast_row$covariates)
-
     safe_contrast <- name_map[[contrast_var]]
-    safe_covs     <- sanitize_names(covariates_raw)
 
-    # Only keep covariates that survived into coldata (not dropped for single value)
-    safe_covs <- safe_covs[safe_covs %in% colnames(coldata)]
+    # Read active covariates (decided by step 02 — single authority)
+    active_cov_df <- fread(file.path(inter_dir, "active_covariates.csv")) %>% as.data.frame()
+    safe_covs     <- active_cov_df$sanitized_name
 
-    # Re-coerce factors (CSV strips metadata) and drop constant covariates
+    # Re-coerce factors (CSV strips factor metadata after round-trip)
     cad <- coerce_and_drop_covariates(coldata, safe_contrast, safe_covs, logger)
     coldata   <- cad$coldata
     safe_covs <- cad$covariates
@@ -185,6 +183,8 @@ main <- function(config_path, contrast_id, stratum) {
 
     # Align column order
     counts_mat <- counts_mat[, rownames(coldata), drop = FALSE]
+
+    stopifnot(!anyNA(coldata[, c(safe_contrast, safe_covs), drop = FALSE]))
 
     dds <- try_logged({
         dds <- suppressWarnings(suppressMessages(DESeq2::DESeqDataSetFromMatrix(

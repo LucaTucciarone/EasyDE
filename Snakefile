@@ -129,9 +129,10 @@ rule prepare_coldata:
         meta      = cfg["inputs"]["sample_metadata"],
         contrasts = cfg["inputs"]["contrasts_file"],
     output:
-        coldata = inter("{contrast}", "{stratum_safe}", "coldata.csv"),
-        counts  = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
-        namemap = inter("{contrast}", "{stratum_safe}", "name_map.csv"),
+        coldata     = inter("{contrast}", "{stratum_safe}", "coldata.csv"),
+        counts      = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
+        namemap     = inter("{contrast}", "{stratum_safe}", "name_map.csv"),
+        active_covs = inter("{contrast}", "{stratum_safe}", "active_covariates.csv"),
     params:
         stratum = original_stratum
     log:
@@ -152,9 +153,10 @@ rule prepare_coldata:
 
 rule deseq_base:
     input:
-        config  = PIPELINE_CONFIG,
-        coldata = inter("{contrast}", "{stratum_safe}", "coldata.csv"),
-        counts  = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
+        config      = PIPELINE_CONFIG,
+        coldata     = inter("{contrast}", "{stratum_safe}", "coldata.csv"),
+        counts      = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
+        active_covs = inter("{contrast}", "{stratum_safe}", "active_covariates.csv"),
     output:
         results = final("{contrast}", "{stratum_safe}", "results_base.tsv"),
     params:
@@ -177,9 +179,10 @@ rule deseq_base:
 
 rule ruvseq:
     input:
-        config  = PIPELINE_CONFIG,
-        counts  = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
-        results = final("{contrast}", "{stratum_safe}", "results_base.tsv"),
+        config      = PIPELINE_CONFIG,
+        counts      = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
+        results     = final("{contrast}", "{stratum_safe}", "results_base.tsv"),
+        active_covs = inter("{contrast}", "{stratum_safe}", "active_covariates.csv"),
     output:
         coldata = inter("{contrast}", "{stratum_safe}", "ruvseq_best_coldata.csv"),
         summary = inter("{contrast}", "{stratum_safe}", "ruvseq_summary.csv"),
@@ -203,10 +206,11 @@ rule ruvseq:
 
 rule deseq_final:
     input:
-        config  = PIPELINE_CONFIG,
-        counts  = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
-        coldata = inter("{contrast}", "{stratum_safe}", "ruvseq_best_coldata.csv"),
-        summary = inter("{contrast}", "{stratum_safe}", "ruvseq_summary.csv"),
+        config      = PIPELINE_CONFIG,
+        counts      = inter("{contrast}", "{stratum_safe}", "counts_filtered.csv"),
+        coldata     = inter("{contrast}", "{stratum_safe}", "ruvseq_best_coldata.csv"),
+        summary     = inter("{contrast}", "{stratum_safe}", "ruvseq_summary.csv"),
+        active_covs = inter("{contrast}", "{stratum_safe}", "active_covariates.csv"),
     output:
         results = final("{contrast}", "{stratum_safe}", "results_ruv.tsv"),
     params:

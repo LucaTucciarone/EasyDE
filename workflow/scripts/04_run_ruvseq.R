@@ -322,14 +322,15 @@ main <- function(config_path, contrast_id, stratum) {
     # --- Resolve names ---
     contrast_var       <- trimws(contrast_row$contrast_var)
     biosample_id_col   <- trimws(contrast_row$biosample_id_col)
-    covariates_raw     <- parse_pipe_field(contrast_row$covariates)
     latent_corr_raw    <- parse_pipe_field(contrast_row$latent_corr_vars)
 
     safe_contrast      <- name_map[[contrast_var]]
-    safe_covs          <- sanitize_names(covariates_raw)
-    safe_covs          <- safe_covs[safe_covs %in% colnames(coldata)]
 
-    # Re-coerce factors (CSV strips metadata) and drop constant covariates
+    # Read active covariates (decided by step 02 — single authority)
+    active_cov_df <- fread(file.path(inter_dir, "active_covariates.csv")) %>% as.data.frame()
+    safe_covs     <- active_cov_df$sanitized_name
+
+    # Re-coerce factors (CSV strips factor metadata after round-trip)
     cad <- coerce_and_drop_covariates(coldata, safe_contrast, safe_covs, logger)
     coldata   <- cad$coldata
     safe_covs <- cad$covariates

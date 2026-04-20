@@ -56,8 +56,9 @@ correlate_latent_vars <- function(meta, latent_names, correlate_vars) {
 
     for (v in correlate_vars) {
         for (x in latent_names) {
-            fit_full <- lm(as.formula(paste0(x, " ~ ", v)), data = meta, na.action = na.omit)
-            fit_null <- lm(as.formula(paste0(x, " ~ 1")),   data = meta, na.action = na.omit)
+            meta_v   <- meta[!is.na(meta[[v]]), , drop = FALSE]
+            fit_full <- lm(as.formula(paste0(x, " ~ ", v)), data = meta_v)
+            fit_null <- lm(as.formula(paste0(x, " ~ 1")),   data = meta_v)
             coefs    <- summary(fit_full)$coefficients
             # Guard: if the variable was dropped (e.g. only 1 level), record NA
             if (nrow(coefs) < 2) {

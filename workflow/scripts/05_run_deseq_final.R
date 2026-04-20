@@ -162,13 +162,13 @@ main <- function(config_path, contrast_id, stratum) {
     contrast_var     <- trimws(contrast_row$contrast_var)
     control_grp      <- trimws(contrast_row$control_grp)
     experimental_grp <- trimws(contrast_row$experimental_grp)
-    covariates_raw   <- parse_pipe_field(contrast_row$covariates)
-
     safe_contrast <- name_map[[contrast_var]]
-    safe_covs     <- sanitize_names(covariates_raw)
-    safe_covs     <- safe_covs[safe_covs %in% colnames(coldata_ruv)]
 
-    # Re-coerce factors (CSV strips metadata) and drop constant covariates
+    # Read active covariates (decided by step 02 — single authority)
+    active_cov_df <- fread(file.path(inter_dir, "active_covariates.csv")) %>% as.data.frame()
+    safe_covs     <- active_cov_df$sanitized_name
+
+    # Re-coerce factors (CSV strips factor metadata after round-trip)
     cad <- coerce_and_drop_covariates(coldata_ruv, safe_contrast, safe_covs, logger)
     coldata_ruv <- cad$coldata
     safe_covs   <- cad$covariates
@@ -190,7 +190,14 @@ main <- function(config_path, contrast_id, stratum) {
     formula_str <- build_ruv_formula(safe_covs, safe_ws, safe_contrast)
     logger$info("deseq_final", sprintf("formula: %s", formula_str))
 
+    if (length(safe_covs) == 0 && length(safe_ws) == 0) {
+        logger$warn("deseq_final",
+            "formula collapsed to ~ condition only — no covariates or W factors")
+    }
+
     counts_mat <- counts_mat[, rownames(coldata_ruv), drop = FALSE]
+
+    stopifnot(!anyNA(coldata_ruv[, c(safe_contrast, safe_covs), drop = FALSE]))
 
     # --- Check preflight for zero-inflation flag ---
     preflight <- read_preflight_report(inter_dir)

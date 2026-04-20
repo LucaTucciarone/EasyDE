@@ -280,11 +280,11 @@ main <- function(config_path, contrast_id, stratum) {
 
     # Define output dir early and register skip sentinel
     out_dir <- file.path(cfg$outputs$results_dir, contrast_id, stratum_safe, "intermediates")
-    register_skip_sentinel(out_dir, c("coldata.csv", "counts_filtered.csv", "name_map.csv"))
+    register_skip_sentinel(out_dir, c("coldata.csv", "counts_filtered.csv", "name_map.csv", "active_covariates.csv"))
 
     # --- Define output dir early so sentinel can fire on any skip ---
     on.exit({
-        for (.f in c("coldata.csv", "counts_filtered.csv", "name_map.csv")) {
+        for (.f in c("coldata.csv", "counts_filtered.csv", "name_map.csv", "active_covariates.csv")) {
             .p <- file.path(out_dir, .f)
             if (!file.exists(.p)) {
                 dir.create(dirname(.p), recursive = TRUE, showWarnings = FALSE)
@@ -539,11 +539,43 @@ main <- function(config_path, contrast_id, stratum) {
     coldata          <- coldata_result$coldata
     name_map         <- coldata_result$name_map
     dropped_covs     <- coldata_result$dropped_covariates
+    drop_reasons     <- if (length(dropped_covs) > 0)
+        sprintf("%s_dropped_single_value", dropped_covs) else character(0)
 
     if (length(dropped_covs) > 0) {
         logger$warn("prepare_coldata",
             sprintf("covariates dropped (only 1 unique value): %s",
                     paste(dropped_covs, collapse = ", ")))
+    }
+
+    # --- Drop donors with NA in the contrast variable ---
+    safe_contrast_na <- name_map[[contrast_var]]
+    contrast_na_idx  <- is.na(coldata[[safe_contrast_na]])
+    n_contrast_na    <- sum(contrast_na_idx)
+    if (n_contrast_na > 0) {
+        dropped_ids <- rownames(coldata)[contrast_na_idx]
+        logger$warn("drop_donors_contrast_na",
+            sprintf("%s dropped %d/%d donors with NA contrast value: %s",
+                    contrast_var, n_contrast_na, nrow(coldata),
+                    paste(dropped_ids, collapse = ", ")))
+        coldata   <- coldata[!contrast_na_idx, , drop = FALSE]
+        keep_cols <- intersect(rownames(coldata), colnames(raw_mat))
+        raw_mat   <- raw_mat[, keep_cols, drop = FALSE]
+    }
+
+    # --- Drop covariates with ANY NA (never drop donors for covariate NAs) ---
+    surviving_covs <- setdiff(sanitize_names(covariates), dropped_covs)
+    for (v in surviving_covs) {
+        if (v %in% colnames(coldata)) {
+            n_missing <- sum(is.na(coldata[[v]]))
+            if (n_missing > 0) {
+                dropped_covs <- c(dropped_covs, v)
+                drop_reasons <- c(drop_reasons,
+                    sprintf("%s_dropped_NA_%d_of_%d", v, n_missing, nrow(coldata)))
+                logger$warn("drop_covariate_na",
+                    sprintf("%s dropped: %d/%d missing", v, n_missing, nrow(coldata)))
+            }
+        }
     }
 
     # --- Second-pass covariate drop: factor levels after NA removal ---
@@ -560,6 +592,8 @@ main <- function(config_path, contrast_id, stratum) {
             observed_levels <- levels(droplevels(coldata[[v]]))
             if (length(observed_levels) < 2) {
                 dropped_covs <- c(dropped_covs, v)
+                drop_reasons <- c(drop_reasons,
+                    sprintf("%s_dropped_single_level", v))
                 logger$warn("drop_covariate",
                     sprintf("%s has < 2 observed factor levels after filtering — dropping", v))
             }
@@ -634,6 +668,18 @@ main <- function(config_path, contrast_id, stratum) {
                                 stringsAsFactors = FALSE)
     write_result(name_map_df, file.path(out_dir, "name_map.csv"), sep = ",")
 
+    # Save active covariates (authoritative list for steps 03/04/05)
+    active_covs_final <- setdiff(sanitize_names(covariates), dropped_covs)
+    original_lookup   <- setNames(names(name_map), unname(name_map))
+    active_cov_df     <- data.frame(
+        original_name  = unname(original_lookup[active_covs_final]),
+        sanitized_name = active_covs_final,
+        stringsAsFactors = FALSE
+    )
+    write_result(active_cov_df, file.path(out_dir, "active_covariates.csv"), sep = ",")
+    logger$info("write_outputs",
+        sprintf("active_covariates.csv: %d active", nrow(active_cov_df)))
+
     # --- Write preflight report ---
     preflight_status <- if (length(preflight_errors) > 0) {
         "fail"
@@ -653,7 +699,7 @@ main <- function(config_path, contrast_id, stratum) {
             n_control           = counts_result$n_control,
             n_experimental      = counts_result$n_experimental,
             n_covariates_active = length(active_covs),
-            dropped_covariates  = if (length(dropped_covs) > 0) paste(dropped_covs, collapse = "|") else NA_character_,
+            dropped_covariates  = if (length(drop_reasons) > 0) paste(drop_reasons, collapse = "|") else NA_character_,
             rank_ok             = preflight_rank_ok,
             near_singular_vars  = if (length(preflight_near_singular) > 0) paste(preflight_near_singular, collapse = "|") else NA_character_,
             zero_inflated       = zi_result$zero_inflated,

@@ -1,5 +1,7 @@
 # EasyDE
 
+**Version: v1.1.0** — see [CHANGELOG](CHANGELOG.md) for release history.
+
 A modular R pipeline for pseudobulk differential expression analysis with
 RUVseq correction and gene set enrichment. Designed for scRNA-seq data
 (PanKbase and similar resources) but works with any pseudobulk count matrices.
@@ -30,7 +32,8 @@ zero-inflation, sample sufficiency, and data quality issues. Rejected strata
 are skipped cleanly through the rest of the pipeline, saving compute time.
 The pipeline also handles several edge cases automatically: `poscounts`
 normalization for sparse count matrices, factor coercion for logical columns,
-second-pass covariate drops, and graceful RUV-to-base fallback. See
+NA-covariate detection and automatic formula adjustment, second-pass covariate
+drops, and graceful RUV-to-base fallback. See
 [Methods — Edge Cases](docs/METHODS.md#edge-cases-and-workarounds) for details.
 
 ---
@@ -104,11 +107,12 @@ EasyDE/
 
 | Guide | Contents |
 |-------|----------|
+| **[Changelog](CHANGELOG.md)** | Release history and upgrade notes |
 | **[Vignette](vignette.md)** | Step-by-step walkthrough of a single contrast x stratum |
 | **[Installation](docs/INSTALLATION.md)** | Environment setup, verification, known issues |
 | **[Configuration](docs/CONFIGURATION.md)** | Config files, contrast definitions, data formats |
 | **[Running](docs/RUNNING.md)** | Snakemake commands, SLURM setup, step-by-step manual run |
-| **[Methods](docs/METHODS.md)** | DESeq2, RUVSeq (W exclusion strategy), fGSEA, signature benchmarking, paired analysis, preflight validation |
+| **[Methods](docs/METHODS.md)** | DESeq2, RUVSeq (W exclusion strategy), fGSEA, signature benchmarking, paired analysis, preflight validation, sample filtering |
 | **[Output](docs/OUTPUT.md)** | File tree, column descriptions, best-model file, status taxonomy |
 | **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Common errors, log reading, resource files |
 | **[Future Features](docs/FUTURE_FEATURES.md)** | Designed improvements not yet implemented |

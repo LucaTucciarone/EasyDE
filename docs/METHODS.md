@@ -110,6 +110,35 @@ relationship between W factors and all known variables:
 
 ---
 
+## Sample and Gene Filtering (step 02)
+
+Step 02 (`02_prepare_coldata.R`) applies two distinct stages of filtering before dispersion estimation: **QC filters** remove low-quality samples and lowly-expressed genes, and **analytical restrictions** define which donors enter a given comparison.
+
+### QC filters
+
+**Samples and donors:**
+
+- **Minimum cells per sample** (`filtering.min_cells_per_sample`; default 20). Biosamples aggregating fewer than 20 single cells, or lacking a cell count, are discarded so that pseudobulk profiles are statistically stable.
+- **Donor deduplication** (unpaired mode). If a donor contributed multiple biosamples, one is retained at random (seeded for reproducibility) to avoid pseudoreplication. Skipped in paired mode, where repeat biosamples are genuine replicates.
+- **Preflight sample-size gates.** Strata with fewer than 3 surviving samples are marked `skipped_no_samples`. For categorical contrasts, fewer than 3 samples per group — or a sample count not exceeding the number of model coefficients — triggers `skipped_min_group`. In paired mode, strata with no donors present in both arms are marked `skipped_no_pairs`.
+
+**Genes:**
+
+A group-aware low-count filter (`filtering.min_gene_counts`; default 5) is applied before size-factor and dispersion estimation. For categorical contrasts, a gene is retained if it has at least `min_gene_counts` reads in at least half the samples of *either* group (union rule), preserving condition-specific signals such as induced genes, lineage markers, or cytokine responses that a symmetric threshold would discard. For continuous contrasts, a gene must meet the count threshold in at least half of all samples.
+
+### Analytical restrictions
+
+After QC, the cohort is narrowed to donors relevant to the specific comparison:
+
+- **Contrast group restriction.** For categorical contrasts, only samples in `control_grp` or `experimental_grp` are retained.
+- **User-defined metadata filters** (`filter_col_N` / `filter_val_N` in the contrasts CSV, up to three pairs). Applied sequentially to restrict the analysis to a metadata stratum — for example, untreated donors, a single sex, or a specific tissue source.
+- **Paired-design matching** (paired mode). Only donors present in both arms are kept.
+- **Count-matrix alignment.** The count matrix is reduced to the intersection of its columns with surviving biosample IDs; metadata-only samples are logged and dropped.
+
+Cell-type labels are matched case- and punctuation-insensitively, so `"Gamma+Epsilon"` and `"Gamma_Epsilon"` are equivalent.
+
+---
+
 ## Edge Cases and Workarounds
 
 The pipeline detects and handles several edge cases that commonly arise in
@@ -182,6 +211,36 @@ factors with 2 or more levels."
 on each factor covariate and removes any with fewer than 2 observed levels.
 The dropped covariates are recorded in `preflight.csv` and
 `contrast_summary.csv`.
+
+### NA covariates — automatic formula adjustment
+
+**Problem:** A covariate specified in `contrasts.csv` (e.g., `SI:Age`) may
+have missing values (`NA`) for some donors in a given stratum. DESeq2 does
+not silently drop those donors — it errors with "variables in design formula
+cannot contain NA". Dropping donors to satisfy a covariate constraint is
+also undesirable because it reduces power and can bias the comparison.
+
+**Fix (v1.1.0):** Step 02 inspects each covariate after the cohort is
+assembled. Any covariate with one or more `NA` values in the filtered sample
+set is **dropped from the formula** (never the donors). The reason is
+recorded in `preflight.csv` as a structured string such as
+`Age_dropped_NA_3_of_47`. The surviving covariates are written to
+`active_covariates.csv` (see *Active covariates file* below), which steps
+03–05 read directly.
+
+**Contrast variable with NAs:** If the contrast variable itself has `NA`
+values, those donors *are* dropped (they cannot contribute to the comparison
+regardless), and the count is logged.
+
+### Active covariates file
+
+`intermediates/active_covariates.csv` is produced by step 02 and lists the
+covariates that survived all drop criteria (single-value, second-pass level
+collapse, and NA checks). It has two columns: `original_name` (as written in
+`contrasts.csv`) and `sanitized_name` (R-safe version used in the formula).
+Steps 03 (`deseq_base`), 04 (`ruvseq`), and 05 (`deseq_final`) read this
+file rather than re-parsing `contrasts.csv`, making step 02 the single
+authority on the active covariate set.
 
 ### Graceful RUVseq failure → base fallback
 
