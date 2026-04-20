@@ -321,7 +321,7 @@ main <- function(config_path, contrast_id, stratum) {
 
     # --- Resolve names ---
     contrast_var       <- trimws(contrast_row$contrast_var)
-    biosample_id_col   <- trimws(contrast_row$biosample_id_col)
+    biosample_id_col   <- sanitize_names(trimws(contrast_row$biosample_id_col))
     latent_corr_raw    <- parse_pipe_field(contrast_row$latent_corr_vars)
 
     safe_contrast      <- name_map[[contrast_var]]

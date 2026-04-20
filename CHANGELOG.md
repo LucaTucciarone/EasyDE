@@ -6,6 +6,24 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.1.1] — 2026-04-20
+
+### Fixed
+
+- **`object 'SI' not found` crash in step 04 RUVseq** when `biosample_id_col`
+  contains colons (e.g. `SI:Subject_ID`). The column name was read from
+  `contrasts.csv` with `trimws()` but never sanitized, then passed into
+  `compute_rle_anova()` where it was interpolated into an R formula string
+  (`paste("value ~", biosample_id_col)`). R's formula parser interprets the
+  colon as an interaction operator, causing it to evaluate `SI` as an object
+  rather than a column name. Fixed by applying `sanitize_names()` at the point
+  of reading (`biosample_id_col <- sanitize_names(trimws(...))`), consistent
+  with how all other column names are handled throughout step 04. Step 02 is
+  unaffected — it correctly reads `biosample_id_col` unsanitized to look up
+  the column in the original metadata file.
+
+---
+
 ## [v1.1.0] — 2026-04-20
 
 ### Added
