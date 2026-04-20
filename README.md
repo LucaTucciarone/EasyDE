@@ -1,6 +1,6 @@
 # EasyDE
 
-**Version: v1.1.0** — see [CHANGELOG](CHANGELOG.md) for release history.
+**Version: v1.1.1** — see [CHANGELOG](CHANGELOG.md) for release history.
 
 A modular R pipeline for pseudobulk differential expression analysis with
 RUVseq correction and gene set enrichment. Designed for scRNA-seq data
