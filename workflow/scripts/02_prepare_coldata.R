@@ -348,6 +348,13 @@ main <- function(config_path, contrast_id, stratum) {
     )
     if (!is.null(sample_metadata)) {
         logger$info("load_metadata", sprintf("loaded %d rows", nrow(sample_metadata)))
+        # Normalize empty strings to NA across all character columns once at read time.
+        # Avoids downstream issues where is.na() misses "" and coercion to numeric produces NAs.
+        for (.col in names(sample_metadata)) {
+            if (is.character(sample_metadata[[.col]])) {
+                sample_metadata[[.col]][trimws(sample_metadata[[.col]]) == ""] <- NA_character_
+            }
+        }
     }
     if (is.null(sample_metadata)) return(invisible(NULL))
 

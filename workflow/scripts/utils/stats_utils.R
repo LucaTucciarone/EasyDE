@@ -76,8 +76,13 @@ correlate_latent_vars <- function(meta, latent_names, correlate_vars) {
                 if (nrow(non_intercept) == 0) {
                     t_mat[v, x] <- NA
                 } else {
-                    best_row <- which.max(abs(non_intercept[, 3]))
-                    t_mat[v, x] <- non_intercept[best_row, 3]
+                    t_vals <- non_intercept[, 3]
+                    if (all(is.na(t_vals))) {
+                        t_mat[v, x] <- NA
+                    } else {
+                        best_row <- which.max(abs(t_vals))
+                        t_mat[v, x] <- non_intercept[best_row, 3]
+                    }
                 }
             }
         }
